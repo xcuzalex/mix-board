@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mixboard-core",
+    "crates/mixboard-wasm",
+    "crates/mixboard-tauri",
+]

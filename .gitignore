@@ -1,0 +1,7 @@
+/target
+/ui/node_modules
+/ui/dist
+/crates/mixboard-wasm/pkg
+.idea
+.DS_Store
+/docs
