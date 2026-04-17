@@ -4,6 +4,7 @@ import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import type { ShapeVariant } from '../types/element';
 import type { ToolType } from '../types/tool';
+import { AIButton } from '../ai/components';
 import {
   QUICK_SHAPE_ITEMS,
   SHAPE_LIBRARY_SECTIONS,
@@ -333,6 +334,8 @@ export function Toolbar() {
               </ToolbarButton>
             );
           })}
+
+          <AIButton />
         </div>
       </div>
     </>

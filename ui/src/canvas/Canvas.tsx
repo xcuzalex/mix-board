@@ -381,6 +381,7 @@ export function Canvas() {
   const elements = useDocumentStore((s) => s.elements);
   const appState = useDocumentStore((s) => s.appState);
   const addElement = useDocumentStore((s) => s.addElement);
+  const addEmbeddedFile = useDocumentStore((s) => s.addEmbeddedFile);
   const updateElement = useDocumentStore((s) => s.updateElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
   const removeElements = useDocumentStore((s) => s.removeElements);
@@ -736,10 +737,16 @@ export function Canvas() {
           }
           const el = createElementForTool('image', canvasPos.x - w / 2, canvasPos.y - h / 2);
           if (el) {
+            pushHistory();
+            addEmbeddedFile({
+              id: fileId,
+              mimeType: file.type || 'image/png',
+              dataURL,
+              created: Date.now(),
+            });
             (el as ImageElement).fileId = fileId;
             el.width = w;
             el.height = h;
-            pushHistory();
             addElement(el);
             setSelectedIds([el.id]);
             setSelectedMindmapNode(null);
@@ -900,6 +907,7 @@ export function Canvas() {
     editingMindmapNode,
     finishEditing,
     addElement,
+    addEmbeddedFile,
     setActiveTool,
     setActiveShapeVariant,
     startTextEditing,
@@ -1200,6 +1208,27 @@ export function Canvas() {
   // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Don't handle shortcuts when focus is in an input / textarea / contenteditable
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+
+      // Don't intercept shortcuts when the target is inside an overlay panel (e.g. AI chat)
+      if ((e.target as HTMLElement)?.closest?.('[data-overlay-panel]')) {
+        return;
+      }
+      // Also skip if text is selected inside an overlay panel (copy support)
+      const sel = window.getSelection();
+      if (sel && sel.toString() && sel.anchorNode) {
+        const anchor = sel.anchorNode instanceof HTMLElement
+          ? sel.anchorNode
+          : sel.anchorNode.parentElement;
+        if (anchor?.closest('[data-overlay-panel]')) {
+          return;
+        }
+      }
+
       // Don't handle shortcuts when editing text
       if (editingElement || editingMindmapNode) {
         if (e.key === 'Escape') {

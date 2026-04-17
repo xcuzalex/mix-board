@@ -12,6 +12,10 @@ import { createShapePath, getElementShapeVariant, renderShapeDecoration } from '
 // Image cache for rendering
 const imageCache = new Map<string, HTMLImageElement>();
 
+export function clearImageCache() {
+  imageCache.clear();
+}
+
 export function loadImageToCache(fileId: string, dataURL: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (imageCache.has(fileId)) { resolve(); return; }

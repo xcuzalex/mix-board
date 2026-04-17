@@ -9,14 +9,12 @@ pub fn new_document() -> Result<String, String> {
 
 #[tauri::command]
 pub fn open_document(json: String) -> Result<String, String> {
-    // Validate the JSON, then return it back
     let doc = serialization::deserialize(&json).map_err(|e| e.to_string())?;
     serialization::serialize(&doc).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn save_document(json: String) -> Result<String, String> {
-    // Validate before saving
     let _doc = serialization::deserialize(&json).map_err(|e| e.to_string())?;
     Ok(json)
 }

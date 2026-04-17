@@ -3,6 +3,7 @@ import { Toolbar } from './components/Toolbar';
 import { TopBar } from './components/TopBar';
 import { ZoomControl } from './components/ZoomControl';
 import { PropertyPanel } from './components/PropertyPanel';
+import { AIChatPanel, AISettingsPanel } from './ai/components';
 import { isDesktop } from './platform';
 
 export default function App() {
@@ -16,6 +17,8 @@ export default function App() {
         <Toolbar />
         <PropertyPanel />
         <ZoomControl />
+        <AIChatPanel />
+        <AISettingsPanel />
       </div>
     </div>
   );
