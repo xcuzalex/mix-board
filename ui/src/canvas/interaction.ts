@@ -19,6 +19,50 @@ import {
 } from './linear';
 import { getDefaultShapeVariant, isShapeTool } from './shape-utils';
 
+function perpendicularDistance(
+  point: [number, number],
+  lineStart: [number, number],
+  lineEnd: [number, number],
+): number {
+  const dx = lineEnd[0] - lineStart[0];
+  const dy = lineEnd[1] - lineStart[1];
+  const lenSq = dx * dx + dy * dy;
+
+  if (lenSq === 0) {
+    return Math.hypot(point[0] - lineStart[0], point[1] - lineStart[1]);
+  }
+
+  const t = Math.max(0, Math.min(1, ((point[0] - lineStart[0]) * dx + (point[1] - lineStart[1]) * dy) / lenSq));
+  const projX = lineStart[0] + t * dx;
+  const projY = lineStart[1] + t * dy;
+  return Math.hypot(point[0] - projX, point[1] - projY);
+}
+
+export function simplifyPoints(points: [number, number][], epsilon: number): [number, number][] {
+  if (points.length <= 2) return points;
+
+  let maxDist = 0;
+  let maxIndex = 0;
+  const first = points[0];
+  const last = points[points.length - 1];
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const dist = perpendicularDistance(points[i], first, last);
+    if (dist > maxDist) {
+      maxDist = dist;
+      maxIndex = i;
+    }
+  }
+
+  if (maxDist > epsilon) {
+    const left = simplifyPoints(points.slice(0, maxIndex + 1), epsilon);
+    const right = simplifyPoints(points.slice(maxIndex), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+
+  return [first, last];
+}
+
 export interface InteractionState {
   startX: number;
   startY: number;
@@ -256,7 +300,23 @@ export function handlePointerMove(
   if (action === 'draw' && state.activeElement) {
     if (state.activeElement.type === 'freedraw' || state.activeElement.type === 'highlighter') {
       const el = state.activeElement as FreedrawElement | HighlighterElement;
-      el.points.push([canvas.x - el.x, canvas.y - el.y]);
+      const newPoint: [number, number] = [canvas.x - el.x, canvas.y - el.y];
+
+      const MIN_DISTANCE = 2;
+      if (el.points.length > 0) {
+        const lastPoint = el.points[el.points.length - 1];
+        const dist = Math.hypot(newPoint[0] - lastPoint[0], newPoint[1] - lastPoint[1]);
+        if (dist < MIN_DISTANCE) {
+          return { activeElement: { ...el } };
+        }
+      }
+
+      el.points.push(newPoint);
+
+      if (el.points.length > 20 && el.points.length % 20 === 0) {
+        el.points = simplifyPoints(el.points, 1.5);
+      }
+
       return { activeElement: { ...el } };
     }
 
@@ -488,7 +548,7 @@ export function createElementForTool(
     case 'arrow':
       return {
         ...base, type: 'arrow',
-        connectorShape: 'straight',
+        connectorShape: 'curve',
         points: [[0, 0], [0, 0]],
         startBinding: null, endBinding: null,
         startArrowType: 'none', endArrowType: 'arrow',

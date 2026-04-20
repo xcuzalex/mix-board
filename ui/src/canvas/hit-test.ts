@@ -4,10 +4,40 @@ import { getLinearAbsolutePoints } from './linear';
 
 const HIT_THRESHOLD = 4;
 
+/**
+ * Quick bounding-box pre-check to skip elements that clearly don't contain the point.
+ * This avoids expensive hit tests for elements far from the cursor.
+ */
+function elementCouldContainPoint(el: Element, x: number, y: number): boolean {
+  const margin = 20;
+  switch (el.type) {
+    case 'line':
+    case 'arrow':
+    case 'freedraw':
+    case 'highlighter':
+      // These elements need generous bounding boxes
+      return x >= el.x - margin && x <= el.x + el.width + margin &&
+             y >= el.y - margin && y <= el.y + el.height + margin;
+    case 'section':
+    case 'frame':
+      // These have title areas above and borders
+      return x >= el.x - 20 && x <= el.x + el.width + 20 &&
+             y >= el.y - 25 && y <= el.y + el.height + 20;
+    case 'mindmap':
+      // Mindmap elements have complex layouts, use very generous bounds
+      return x >= el.x - 50 && x <= el.x + el.width + 50 &&
+             y >= el.y - 50 && y <= el.y + el.height + 50;
+    default:
+      return x >= el.x && x <= el.x + el.width &&
+             y >= el.y && y <= el.y + el.height;
+  }
+}
+
 export function hitTest(elements: Element[], x: number, y: number): Element | null {
   // Test in reverse order (top-most first)
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
+    if (!elementCouldContainPoint(el, x, y)) continue;
     if (hitTestElement(el, elements, x, y)) {
       return el;
     }
@@ -86,9 +116,24 @@ function hitTestLinear(el: Element, elements: Element[], px: number, py: number)
 
 function hitTestFreedraw(el: Element, px: number, py: number): boolean {
   if (el.type !== 'freedraw' && el.type !== 'highlighter') return false;
-  for (const [x, y] of el.points) {
+  const threshold = HIT_THRESHOLD * 2;
+  const points = el.points;
+  // Use stride for long strokes to reduce hit test cost
+  const stride = points.length > 100 ? 3 : 1;
+
+  for (let i = 0; i < points.length; i += stride) {
+    const [x, y] = points[i];
     const dist = Math.sqrt((px - (el.x + x)) ** 2 + (py - (el.y + y)) ** 2);
-    if (dist < HIT_THRESHOLD * 2) return true;
+    if (dist < threshold) return true;
+  }
+  // Check the last point if skipped by stride
+  if (stride > 1 && points.length > 0) {
+    const lastIdx = points.length - 1;
+    if (lastIdx % stride !== 0) {
+      const [x, y] = points[lastIdx];
+      const dist = Math.sqrt((px - (el.x + x)) ** 2 + (py - (el.y + y)) ** 2);
+      if (dist < threshold) return true;
+    }
   }
   return false;
 }

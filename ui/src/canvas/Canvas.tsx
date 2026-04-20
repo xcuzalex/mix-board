@@ -10,6 +10,7 @@ import {
   handlePointerMove,
   getElementsInSelectionBox,
   createElementForTool,
+  simplifyPoints,
 } from './interaction';
 import { ContextMenu, type ContextMenuState } from '../components/ContextMenu';
 import { loadImageToCache } from './renderer';
@@ -365,6 +366,10 @@ export function Canvas() {
   const [resizeInfo, setResizeInfo] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const mindmapNodeDragRef = useRef<{ elementId: string; nodeId: string } | null>(null);
   const mindmapDropTargetRef = useRef<{ elementId: string; nodeId: string } | null>(null);
+  const rafIdRef = useRef<number>(0);
+  const needsRenderRef = useRef(false);
+  const lastMoveTimeRef = useRef(0);
+  const lastWheelTimeRef = useRef(0);
 
   // Text editing state
   const [editingElement, setEditingElement] = useState<Element | null>(null);
@@ -409,11 +414,6 @@ export function Canvas() {
   cursorRef.current = cursorStyle;
   const freedrawColor = useUIStore((s) => s.freedrawColor);
   const highlighterColor = useUIStore((s) => s.highlighterColor);
-
-  // Sync viewport with store
-  useEffect(() => {
-    viewport.update(viewportX, viewportY, zoom);
-  }, [viewportX, viewportY, zoom]);
 
   // Render function
   const renderScene = useCallback(() => {
@@ -486,16 +486,35 @@ export function Canvas() {
     return () => window.removeEventListener('resize', resize);
   }, []);
 
-  // Re-render when state changes (no continuous RAF loop)
+  // RAF-based render loop for smooth rendering
   useEffect(() => {
-    renderScene();
+    const loop = () => {
+      if (needsRenderRef.current) {
+        needsRenderRef.current = false;
+        renderSceneRef.current();
+      }
+      rafIdRef.current = requestAnimationFrame(loop);
+    };
+
+    rafIdRef.current = requestAnimationFrame(loop);
+
+    return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
+
+  // Mark render as needed when state changes
+  useEffect(() => {
+    needsRenderRef.current = true;
   }, [renderScene]);
 
-  // Also re-render when viewport changes
+  // Also mark render as needed when viewport changes
   useEffect(() => {
     viewport.update(viewportX, viewportY, zoom);
-    renderScene();
-  }, [viewportX, viewportY, zoom, renderScene]);
+    needsRenderRef.current = true;
+  }, [viewportX, viewportY, zoom]);
 
   // --- Text editing helpers ---
 
@@ -918,7 +937,13 @@ export function Canvas() {
       const dy = e.clientY - panStartRef.current.y;
       panStartRef.current = { x: e.clientX, y: e.clientY };
       viewport.pan(dx, dy);
-      setViewport(viewport.x, viewport.y);
+      const now = performance.now();
+      if (now - lastMoveTimeRef.current >= 16) {
+        lastMoveTimeRef.current = now;
+        setViewport(viewport.x, viewport.y);
+      } else {
+        needsRenderRef.current = true;
+      }
       return;
     }
 
@@ -1016,19 +1041,26 @@ export function Canvas() {
     }
 
     if (result.updatedElements) {
-      for (const [id, updates] of result.updatedElements) {
-        updateElement(id, updates);
-      }
-      // Show size info during resize
-      if (actionRef.current === 'resize' && result.updatedElements.size > 0) {
-        const upd = Array.from(result.updatedElements.values())[0];
-        if (upd.width !== undefined && upd.height !== undefined) {
-          const screen = viewport.canvasToScreen(
-            (upd.x ?? 0) + (upd.width ?? 0),
-            (upd.y ?? 0) + (upd.height ?? 0),
-          );
-          setResizeInfo({ x: screen.x + 10, y: screen.y + 10, w: Math.round(upd.width!), h: Math.round(upd.height!) });
+      const now = performance.now();
+      const shouldUpdate = now - lastMoveTimeRef.current >= 16;
+      if (shouldUpdate) {
+        lastMoveTimeRef.current = now;
+        for (const [id, updates] of result.updatedElements) {
+          updateElement(id, updates);
         }
+        // Show size info during resize
+        if (actionRef.current === 'resize' && result.updatedElements.size > 0) {
+          const upd = Array.from(result.updatedElements.values())[0];
+          if (upd.width !== undefined && upd.height !== undefined) {
+            const screen = viewport.canvasToScreen(
+              (upd.x ?? 0) + (upd.width ?? 0),
+              (upd.y ?? 0) + (upd.height ?? 0),
+            );
+            setResizeInfo({ x: screen.x + 10, y: screen.y + 10, w: Math.round(upd.width!), h: Math.round(upd.height!) });
+          }
+        }
+      } else {
+        needsRenderRef.current = true;
       }
     }
   }, [
@@ -1111,8 +1143,8 @@ export function Canvas() {
       // Only add if it has some size
       if (el.type === 'freedraw' || el.type === 'highlighter') {
         if ((el as any).points.length > 1) {
+          (el as any).points = simplifyPoints((el as any).points, 1);
           addElement(el);
-          // Don't switch back to select for drawing tools - allow continuous drawing
         }
       } else if (el.type === 'line' || el.type === 'arrow') {
         const points = getLinearAbsolutePoints(el as LinearElement, elements);
@@ -1178,17 +1210,28 @@ export function Canvas() {
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
 
+    const now = performance.now();
+    const shouldUpdate = now - lastWheelTimeRef.current >= 16;
+
     if (e.ctrlKey || e.metaKey) {
-      // Pinch zoom
       const delta = -e.deltaY * 0.01;
       const newZoom = zoom * (1 + delta);
       viewport.zoomAtPoint(screenX, screenY, newZoom);
-      setZoom(viewport.zoom);
-      setViewport(viewport.x, viewport.y);
+      if (shouldUpdate) {
+        lastWheelTimeRef.current = now;
+        setZoom(viewport.zoom);
+        setViewport(viewport.x, viewport.y);
+      } else {
+        needsRenderRef.current = true;
+      }
     } else {
-      // Pan
       viewport.pan(-e.deltaX, -e.deltaY);
-      setViewport(viewport.x, viewport.y);
+      if (shouldUpdate) {
+        lastWheelTimeRef.current = now;
+        setViewport(viewport.x, viewport.y);
+      } else {
+        needsRenderRef.current = true;
+      }
     }
   }, [zoom, setZoom, setViewport]);
 

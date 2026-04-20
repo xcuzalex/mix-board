@@ -75,23 +75,27 @@ export const useDocumentStore = create<DocumentStore>()(
 
     removeElements: (ids) =>
       set((state) => {
-        state.elements = state.elements.filter((e) => !ids.includes(e.id));
+        const idSet = new Set(ids);
+        state.elements = state.elements.filter((e) => !idSet.has(e.id));
         state.isDirty = true;
       }),
 
     updateElement: (id, updates) =>
       set((state) => {
-        const idx = state.elements.findIndex((e) => e.id === id);
-        if (idx !== -1) {
-          Object.assign(state.elements[idx], updates, { updatedAt: Date.now() });
-          state.isDirty = true;
+        for (let i = 0; i < state.elements.length; i++) {
+          if (state.elements[i].id === id) {
+            Object.assign(state.elements[i], updates, { updatedAt: Date.now() });
+            state.isDirty = true;
+            break;
+          }
         }
       }),
 
     moveElements: (ids, dx, dy) =>
       set((state) => {
+        const idSet = new Set(ids);
         for (const el of state.elements) {
-          if (ids.includes(el.id)) {
+          if (idSet.has(el.id)) {
             el.x += dx;
             el.y += dy;
             el.updatedAt = Date.now();
@@ -139,25 +143,28 @@ export const useDocumentStore = create<DocumentStore>()(
     // Layer ordering
     bringToFront: (ids) =>
       set((state) => {
-        const toMove = state.elements.filter(e => ids.includes(e.id));
-        const rest = state.elements.filter(e => !ids.includes(e.id));
+        const idSet = new Set(ids);
+        const toMove = state.elements.filter(e => idSet.has(e.id));
+        const rest = state.elements.filter(e => !idSet.has(e.id));
         state.elements = [...rest, ...toMove];
         state.isDirty = true;
       }),
 
     sendToBack: (ids) =>
       set((state) => {
-        const toMove = state.elements.filter(e => ids.includes(e.id));
-        const rest = state.elements.filter(e => !ids.includes(e.id));
+        const idSet = new Set(ids);
+        const toMove = state.elements.filter(e => idSet.has(e.id));
+        const rest = state.elements.filter(e => !idSet.has(e.id));
         state.elements = [...toMove, ...rest];
         state.isDirty = true;
       }),
 
     bringForward: (ids) =>
       set((state) => {
+        const idSet = new Set(ids);
         const elements = [...state.elements];
         for (let i = elements.length - 2; i >= 0; i--) {
-          if (ids.includes(elements[i].id) && !ids.includes(elements[i + 1].id)) {
+          if (idSet.has(elements[i].id) && !idSet.has(elements[i + 1].id)) {
             [elements[i], elements[i + 1]] = [elements[i + 1], elements[i]];
           }
         }
@@ -167,9 +174,10 @@ export const useDocumentStore = create<DocumentStore>()(
 
     sendBackward: (ids) =>
       set((state) => {
+        const idSet = new Set(ids);
         const elements = [...state.elements];
         for (let i = 1; i < elements.length; i++) {
-          if (ids.includes(elements[i].id) && !ids.includes(elements[i - 1].id)) {
+          if (idSet.has(elements[i].id) && !idSet.has(elements[i - 1].id)) {
             [elements[i], elements[i - 1]] = [elements[i - 1], elements[i]];
           }
         }
@@ -180,7 +188,8 @@ export const useDocumentStore = create<DocumentStore>()(
     // Alignment
     alignElements: (ids, alignment) =>
       set((state) => {
-        const targets = state.elements.filter(e => ids.includes(e.id));
+        const idSet = new Set(ids);
+        const targets = state.elements.filter(e => idSet.has(e.id));
         if (targets.length < 2) return;
 
         let ref: number;
@@ -221,7 +230,8 @@ export const useDocumentStore = create<DocumentStore>()(
 
     distributeElements: (ids, direction) =>
       set((state) => {
-        const targets = state.elements.filter(e => ids.includes(e.id));
+        const idSet = new Set(ids);
+        const targets = state.elements.filter(e => idSet.has(e.id));
         if (targets.length < 3) return;
 
         if (direction === 'horizontal') {
@@ -256,8 +266,9 @@ export const useDocumentStore = create<DocumentStore>()(
     groupElements: (ids) => {
       const groupId = generateId();
       set((state) => {
+        const idSet = new Set(ids);
         for (const el of state.elements) {
-          if (ids.includes(el.id)) {
+          if (idSet.has(el.id)) {
             el.groupIds = [...el.groupIds, groupId];
             el.updatedAt = Date.now();
           }
@@ -269,15 +280,13 @@ export const useDocumentStore = create<DocumentStore>()(
 
     ungroupElements: (ids) =>
       set((state) => {
-        // Find all group IDs from selected elements
+        const idSet = new Set(ids);
         const groupIdsToRemove = new Set<string>();
         for (const el of state.elements) {
-          if (ids.includes(el.id) && el.groupIds.length > 0) {
-            // Remove the outermost group
+          if (idSet.has(el.id) && el.groupIds.length > 0) {
             groupIdsToRemove.add(el.groupIds[el.groupIds.length - 1]);
           }
         }
-        // Remove those group IDs from all elements
         for (const el of state.elements) {
           const newGroupIds = el.groupIds.filter(gid => !groupIdsToRemove.has(gid));
           if (newGroupIds.length !== el.groupIds.length) {
@@ -297,7 +306,7 @@ export const useDocumentStore = create<DocumentStore>()(
           if (!el) continue;
           const newId = generateId();
           newIds.push(newId);
-          const cloned = JSON.parse(JSON.stringify(el));
+          const cloned = structuredClone(el);
           cloned.id = newId;
           cloned.x += 20;
           cloned.y += 20;
@@ -313,7 +322,7 @@ export const useDocumentStore = create<DocumentStore>()(
     pushHistory: () =>
       set((state) => {
         const entry: HistoryEntry = {
-          elements: JSON.parse(JSON.stringify(get().elements)),
+          elements: structuredClone(get().elements),
         };
         state.undoStack.push(entry);
         if (state.undoStack.length > MAX_HISTORY) {
@@ -328,7 +337,7 @@ export const useDocumentStore = create<DocumentStore>()(
       set((state) => {
         const entry = state.undoStack.pop()!;
         state.redoStack.push({
-          elements: JSON.parse(JSON.stringify(elements)),
+          elements: structuredClone(elements),
         });
         state.elements = entry.elements;
         state.isDirty = true;
@@ -341,7 +350,7 @@ export const useDocumentStore = create<DocumentStore>()(
       set((state) => {
         const entry = state.redoStack.pop()!;
         state.undoStack.push({
-          elements: JSON.parse(JSON.stringify(elements)),
+          elements: structuredClone(elements),
         });
         state.elements = entry.elements;
         state.isDirty = true;

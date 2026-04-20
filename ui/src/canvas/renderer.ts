@@ -44,6 +44,8 @@ export class Renderer {
   private editingMindmapNodeId: string | null = null;
   private mindmapDropTarget: { elementId: string; nodeId: string } | null = null;
   private mindmapDragPreview: { elementId: string; sourceNodeId: string; pointerX: number; pointerY: number; offsetX: number; offsetY: number } | null = null;
+  private mindmapLayoutCacheKey = new Map<string, number>();
+  private shapePathCache = new Map<string, Path2D>();
 
   constructor(ctx: CanvasRenderingContext2D, viewport: Viewport) {
     this.ctx = ctx;
@@ -53,6 +55,43 @@ export class Renderer {
   setSize(width: number, height: number) {
     this.width = width;
     this.height = height;
+  }
+
+  private isElementVisible(el: Element): boolean {
+    const margin = 50;
+    const vpLeft = -this.viewport.x / this.viewport.zoom - margin;
+    const vpTop = -this.viewport.y / this.viewport.zoom - margin;
+    const vpRight = vpLeft + this.width / this.viewport.zoom + margin * 2;
+    const vpBottom = vpTop + this.height / this.viewport.zoom + margin * 2;
+    if (el.type === 'line' || el.type === 'arrow') {
+      const bounds = getLinearBounds(el as LinearElement, this.sceneElements);
+      return bounds.x + bounds.width >= vpLeft && bounds.x <= vpRight &&
+             bounds.y + bounds.height >= vpTop && bounds.y <= vpBottom;
+    }
+    if (el.type === 'mindmap') return true;
+    return el.x + el.width >= vpLeft && el.x <= vpRight &&
+           el.y + el.height >= vpTop && el.y <= vpBottom;
+  }
+
+  private ensureMindmapLayout(el: MindmapElement) {
+    const lastCacheTime = this.mindmapLayoutCacheKey.get(el.id);
+    if (lastCacheTime === el.updatedAt && this.nodeLayout.size > 0) return;
+    this.nodeLayout.clear();
+    this.layoutMindmapNodes(el);
+    this.mindmapLayoutCacheKey.set(el.id, el.updatedAt);
+  }
+
+  private getCachedShapePath(variant: string, x: number, y: number, width: number, height: number, roundness: number): Path2D {
+    const key = `${variant}:${Math.round(x)}:${Math.round(y)}:${Math.round(width)}:${Math.round(height)}:${roundness}`;
+    const cached = this.shapePathCache.get(key);
+    if (cached) return cached;
+    const path = createShapePath(variant as any, x, y, width, height, roundness);
+    this.shapePathCache.set(key, path);
+    if (this.shapePathCache.size > 500) {
+      const firstKey = this.shapePathCache.keys().next().value;
+      if (firstKey !== undefined) this.shapePathCache.delete(firstKey);
+    }
+    return path;
   }
 
   render(
@@ -81,6 +120,7 @@ export class Renderer {
     this.editingMindmapNodeId = editingMindmapNodeId ?? null;
     this.mindmapDropTarget = mindmapDropTarget ?? null;
     this.mindmapDragPreview = mindmapDragPreview ?? null;
+    const selectedIdSet = new Set(selectedIds);
 
     // Clear
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -101,7 +141,8 @@ export class Renderer {
 
     // Elements
     for (const el of elements) {
-      this.renderElement(el, selectedIds.includes(el.id));
+      if (!this.isElementVisible(el)) continue;
+      this.renderElement(el, selectedIdSet.has(el.id));
     }
 
     // Active element being drawn
@@ -118,16 +159,10 @@ export class Renderer {
 
     // Selection highlights
     for (const el of elements) {
-      if (selectedIds.includes(el.id)) {
-        if (this.editingElementId === el.id) {
-          continue;
-        }
-        // Skip outer bounding box for mindmap when a node is selected
-        if (el.type === 'mindmap' && this.selectedMindmapNode?.elementId === el.id) {
-          continue;
-        }
-        this.renderSelectionBox(el);
-      }
+      if (!selectedIdSet.has(el.id)) continue;
+      if (this.editingElementId === el.id) continue;
+      if (el.type === 'mindmap' && this.selectedMindmapNode?.elementId === el.id) continue;
+      this.renderSelectionBox(el);
     }
 
     if (this.mindmapDragPreview) {
@@ -438,7 +473,7 @@ export class Renderer {
   private renderVariantShape(el: Element & { roundness?: number }) {
     const ctx = this.ctx;
     const variant = getElementShapeVariant(el);
-    const path = createShapePath(variant, el.x, el.y, el.width, el.height, el.roundness ?? 8);
+    const path = this.getCachedShapePath(variant, el.x, el.y, el.width, el.height, el.roundness ?? 8);
 
     if (el.backgroundColor && el.backgroundColor !== 'transparent') {
       ctx.fillStyle = el.backgroundColor;
@@ -470,14 +505,13 @@ export class Renderer {
     this.applyStrokeStyle(ctx, el.strokeStyle);
 
     const shape = linear.connectorShape || 'straight';
+    const cornerRadius = Math.min(el.strokeWidth * 2, 12);
 
     ctx.beginPath();
 
     if (shape === 'curve' && pts.length >= 2) {
-      // Bezier curve
       ctx.moveTo(pts[0][0], pts[0][1]);
       if (pts.length === 2) {
-        // Single bezier with auto control points
         const dx = pts[1][0] - pts[0][0];
         const dy = pts[1][1] - pts[0][1];
         const offset = Math.min(Math.abs(dx), Math.abs(dy)) * 0.4;
@@ -487,35 +521,51 @@ export class Renderer {
         const cp2y = pts[1][1] - dy * 0.25 + (Math.abs(dx) > Math.abs(dy) ? offset : 0);
         ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, pts[1][0], pts[1][1]);
       } else {
-        // Multiple points: use quadratic curves through midpoints
-        for (let i = 1; i < pts.length - 1; i++) {
-          const midX = (pts[i][0] + pts[i + 1][0]) / 2;
-          const midY = (pts[i][1] + pts[i + 1][1]) / 2;
-          ctx.quadraticCurveTo(pts[i][0], pts[i][1], midX, midY);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = pts[Math.max(i - 1, 0)];
+          const p1 = pts[i];
+          const p2 = pts[i + 1];
+          const p3 = pts[Math.min(i + 2, pts.length - 1)];
+          const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+          const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+          const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+          const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+          ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
         }
-        ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
       }
     } else if (shape === 'right_angled_polyline' && pts.length >= 2) {
-      // Right-angled polyline (step connector)
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) {
         const prev = pts[i - 1];
         const curr = pts[i];
         const midX = (prev[0] + curr[0]) / 2;
-        ctx.lineTo(midX, prev[1]);
-        ctx.lineTo(midX, curr[1]);
-        ctx.lineTo(curr[0], curr[1]);
+        if (i === 1) {
+          ctx.lineTo(midX, prev[1]);
+        }
+        ctx.arcTo(midX, curr[1], curr[0], curr[1], cornerRadius);
+        if (i === pts.length - 1) {
+          ctx.lineTo(curr[0], curr[1]);
+        } else {
+          const next = pts[i + 1];
+          const nextMidX = (curr[0] + next[0]) / 2;
+          ctx.lineTo(nextMidX, curr[1]);
+        }
       }
     } else {
-      // Straight or polyline
       ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i][0], pts[i][1]);
+      if (pts.length === 2 || cornerRadius === 0) {
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i][0], pts[i][1]);
+        }
+      } else {
+        for (let i = 1; i < pts.length - 1; i++) {
+          ctx.arcTo(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], cornerRadius);
+        }
+        ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
       }
     }
     ctx.stroke();
 
-    // Draw arrow heads
     if (el.type === 'arrow' || el.type === 'line') {
       const startType = linear.startArrowType || 'none';
       const endType = linear.endArrowType || 'none';
@@ -648,11 +698,25 @@ export class Renderer {
 
     if (el.points.length < 2) return;
 
-    ctx.beginPath();
-    ctx.moveTo(el.x + el.points[0][0], el.y + el.points[0][1]);
+    const pts = el.points.map(p => [el.x + p[0], el.y + p[1]]);
 
-    for (let i = 1; i < el.points.length; i++) {
-      ctx.lineTo(el.x + el.points[i][0], el.y + el.points[i][1]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+
+    if (pts.length === 2) {
+      ctx.lineTo(pts[1][0], pts[1][1]);
+    } else {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[Math.max(i - 1, 0)];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[Math.min(i + 2, pts.length - 1)];
+        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
+      }
     }
 
     ctx.strokeStyle = el.strokeColor;
@@ -668,11 +732,25 @@ export class Renderer {
 
     if (el.points.length < 2) return;
 
-    ctx.beginPath();
-    ctx.moveTo(el.x + el.points[0][0], el.y + el.points[0][1]);
+    const pts = el.points.map(p => [el.x + p[0], el.y + p[1]]);
 
-    for (let i = 1; i < el.points.length; i++) {
-      ctx.lineTo(el.x + el.points[i][0], el.y + el.points[i][1]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+
+    if (pts.length === 2) {
+      ctx.lineTo(pts[1][0], pts[1][1]);
+    } else {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[Math.max(i - 1, 0)];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[Math.min(i + 2, pts.length - 1)];
+        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
+      }
     }
 
     ctx.strokeStyle = el.highlightColor;
@@ -776,8 +854,7 @@ export class Renderer {
 
   private renderMindmap(el: MindmapElement) {
     if (!el.rootNode) return;
-    this.nodeLayout.clear();
-    this.layoutMindmapNodes(el);
+    this.ensureMindmapLayout(el);
     this.drawMindmapConnections(el, el.rootNode);
     this.drawMindmapNode(el, el.rootNode);
   }
@@ -1415,8 +1492,7 @@ export class Renderer {
   getMindmapNodeAtPoint(el: MindmapElement, x: number, y: number): MindmapNode | null {
     if (!el.rootNode) return null;
 
-    this.nodeLayout.clear();
-    this.layoutMindmapNodes(el);
+    this.ensureMindmapLayout(el);
 
     const stack: MindmapNode[] = [el.rootNode];
     const nodes: MindmapNode[] = [];
@@ -1447,8 +1523,7 @@ export class Renderer {
 
   getMindmapNodeRect(el: MindmapElement, nodeId: string): { x: number; y: number; w: number; h: number } | null {
     if (!el.rootNode) return null;
-    this.nodeLayout.clear();
-    this.layoutMindmapNodes(el);
+    this.ensureMindmapLayout(el);
     return this.nodeLayout.get(nodeId) ?? null;
   }
 }

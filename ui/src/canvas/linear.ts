@@ -1,31 +1,41 @@
 import type { Binding, Element, LinearElement } from '../types/element';
 
-const FOCUS_POINTS = 3;
+const CONNECTABLE_TYPES = new Set([
+  'rectangle',
+  'ellipse',
+  'diamond',
+  'triangle',
+  'text',
+  'sticky_note',
+  'image',
+  'section',
+  'frame',
+  'mindmap',
+]);
+
+const FOCUS_POINTS = 7;
 
 export function isConnectableElement(element: Element): boolean {
-  return [
-    'rectangle',
-    'ellipse',
-    'diamond',
-    'triangle',
-    'text',
-    'sticky_note',
-    'image',
-    'section',
-    'frame',
-    'mindmap',
-  ].includes(element.type);
+  return CONNECTABLE_TYPES.has(element.type);
 }
 
 export function getConnectionPoints(element: Element): [number, number][] {
   const cx = element.x + element.width / 2;
   const cy = element.y + element.height / 2;
+  const left = element.x;
+  const right = element.x + element.width;
+  const top = element.y;
+  const bottom = element.y + element.height;
 
   return [
-    [cx, element.y],
-    [element.x + element.width, cy],
-    [cx, element.y + element.height],
-    [element.x, cy],
+    [cx, top],
+    [right, top],
+    [right, cy],
+    [right, bottom],
+    [cx, bottom],
+    [left, bottom],
+    [left, cy],
+    [left, top],
   ];
 }
 
