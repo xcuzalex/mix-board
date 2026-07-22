@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { PRESET_COLORS, STICKY_NOTE_COLORS } from '../utils/color';
@@ -77,7 +78,7 @@ function getFirstBranchNode(root: MindmapNode): MindmapNode | null {
 
 export function PropertyPanel() {
   const elements = useDocumentStore((s) => s.elements);
-  const updateElement = useDocumentStore((s) => s.updateElement);
+  const applyTransaction = useDocumentStore((s) => s.applyTransaction);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
   const alignElements = useDocumentStore((s) => s.alignElements);
   const distributeElements = useDocumentStore((s) => s.distributeElements);
@@ -87,6 +88,28 @@ export function PropertyPanel() {
   const highlighterColor = useUIStore((s) => s.highlighterColor);
   const setFreedrawColor = useUIStore((s) => s.setFreedrawColor);
   const setHighlighterColor = useUIStore((s) => s.setHighlighterColor);
+  const historyGestureRef = useRef(false);
+
+  useEffect(() => {
+    const endHistoryGesture = () => {
+      historyGestureRef.current = false;
+    };
+
+    window.addEventListener('pointerup', endHistoryGesture);
+    window.addEventListener('mouseup', endHistoryGesture);
+    window.addEventListener('touchend', endHistoryGesture);
+    window.addEventListener('touchcancel', endHistoryGesture);
+    window.addEventListener('blur', endHistoryGesture);
+
+    return () => {
+      window.removeEventListener('pointerup', endHistoryGesture);
+      window.removeEventListener('mouseup', endHistoryGesture);
+      window.removeEventListener('touchend', endHistoryGesture);
+      window.removeEventListener('touchcancel', endHistoryGesture);
+      window.removeEventListener('blur', endHistoryGesture);
+      historyGestureRef.current = false;
+    };
+  }, []);
 
   // Show drawing tool color picker when no element is selected
   if (selectedIds.length === 0) {
@@ -130,11 +153,34 @@ export function PropertyPanel() {
 
   const first = selectedElements[0];
 
-  const update = (updates: Partial<Element>) => {
+  const beginHistoryGesture = () => {
+    if (historyGestureRef.current) return;
     pushHistory();
-    for (const id of selectedIds) {
-      updateElement(id, updates);
+    historyGestureRef.current = true;
+  };
+
+  const endHistoryGesture = () => {
+    historyGestureRef.current = false;
+  };
+
+  const update = (updates: Partial<Element>, options?: { withHistory?: boolean }) => {
+    if (options?.withHistory ?? true) {
+      pushHistory();
     }
+    const selectedIdSet = new Set(selectedIds);
+    const updatedAt = Date.now();
+    applyTransaction((draft) => {
+      for (const element of draft.elements) {
+        if (selectedIdSet.has(element.id)) {
+          Object.assign(element, updates, { updatedAt });
+        }
+      }
+    });
+  };
+
+  const updateInHistoryGesture = (updates: Partial<Element>) => {
+    beginHistoryGesture();
+    update(updates, { withHistory: false });
   };
 
   const isShape = ['rectangle', 'ellipse', 'diamond', 'triangle'].includes(first.type);
@@ -229,7 +275,14 @@ export function PropertyPanel() {
             max={10}
             step={0.5}
             value={first.strokeWidth}
-            onChange={(e) => update({ strokeWidth: Number(e.target.value) } as any)}
+            onPointerDown={beginHistoryGesture}
+            onMouseDown={beginHistoryGesture}
+            onTouchStart={beginHistoryGesture}
+            onChange={(e) => updateInHistoryGesture({ strokeWidth: Number(e.target.value) } as any)}
+            onPointerUp={endHistoryGesture}
+            onMouseUp={endHistoryGesture}
+            onTouchEnd={endHistoryGesture}
+            onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
           <span className="text-xs text-gray-500">{first.strokeWidth}px</span>
@@ -245,7 +298,14 @@ export function PropertyPanel() {
             max={40}
             step={2}
             value={first.strokeWidth}
-            onChange={(e) => update({ strokeWidth: Number(e.target.value) } as any)}
+            onPointerDown={beginHistoryGesture}
+            onMouseDown={beginHistoryGesture}
+            onTouchStart={beginHistoryGesture}
+            onChange={(e) => updateInHistoryGesture({ strokeWidth: Number(e.target.value) } as any)}
+            onPointerUp={endHistoryGesture}
+            onMouseUp={endHistoryGesture}
+            onTouchEnd={endHistoryGesture}
+            onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
           <span className="text-xs text-gray-500">{first.strokeWidth}px</span>
@@ -322,9 +382,16 @@ export function PropertyPanel() {
               max={10}
               step={0.5}
               value={mindmap.lineStyle.width}
-              onChange={(e) => update({
+              onPointerDown={beginHistoryGesture}
+              onMouseDown={beginHistoryGesture}
+              onTouchStart={beginHistoryGesture}
+              onChange={(e) => updateInHistoryGesture({
                 lineStyle: { ...mindmap.lineStyle, width: Number(e.target.value) },
               } as any)}
+              onPointerUp={endHistoryGesture}
+              onMouseUp={endHistoryGesture}
+              onTouchEnd={endHistoryGesture}
+              onBlur={endHistoryGesture}
               className="w-full h-1.5 accent-blue-500"
             />
             <span className="text-xs text-gray-500">{mindmap.lineStyle.width}px</span>
@@ -399,7 +466,14 @@ export function PropertyPanel() {
           min={0}
           max={100}
           value={first.opacity}
-          onChange={(e) => update({ opacity: Number(e.target.value) } as any)}
+          onPointerDown={beginHistoryGesture}
+          onMouseDown={beginHistoryGesture}
+          onTouchStart={beginHistoryGesture}
+          onChange={(e) => updateInHistoryGesture({ opacity: Number(e.target.value) } as any)}
+          onPointerUp={endHistoryGesture}
+          onMouseUp={endHistoryGesture}
+          onTouchEnd={endHistoryGesture}
+          onBlur={endHistoryGesture}
           className="w-full h-1.5 accent-blue-500"
         />
         <span className="text-xs text-gray-500">{first.opacity}%</span>
@@ -413,7 +487,8 @@ export function PropertyPanel() {
             min={8}
             max={120}
             value={(first as any).fontSize}
-            onChange={(e) => update({ fontSize: Number(e.target.value) } as any)}
+            onChange={(e) => updateInHistoryGesture({ fontSize: Number(e.target.value) } as any)}
+            onBlur={endHistoryGesture}
             className="w-full px-2 py-1 text-xs border border-gray-200 rounded"
           />
         </Section>
@@ -427,7 +502,14 @@ export function PropertyPanel() {
             min={0}
             max={50}
             value={(first as any).roundness ?? 0}
-            onChange={(e) => update({ roundness: Number(e.target.value) } as any)}
+            onPointerDown={beginHistoryGesture}
+            onMouseDown={beginHistoryGesture}
+            onTouchStart={beginHistoryGesture}
+            onChange={(e) => updateInHistoryGesture({ roundness: Number(e.target.value) } as any)}
+            onPointerUp={endHistoryGesture}
+            onMouseUp={endHistoryGesture}
+            onTouchEnd={endHistoryGesture}
+            onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
           <span className="text-xs text-gray-500">{(first as any).roundness ?? 0}px</span>

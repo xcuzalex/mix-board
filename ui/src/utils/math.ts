@@ -49,6 +49,8 @@ export function snapToGrid(value: number, gridSize: number): number {
 export interface SnapGuide {
   type: 'vertical' | 'horizontal';
   position: number;
+  targetElementId?: string;
+  targetEdge?: 'left' | 'right' | 'top' | 'bottom' | 'centerX' | 'centerY';
 }
 
 export interface SnapResult {
@@ -88,11 +90,11 @@ export function snapToElements(
 
     // Vertical snaps (x-axis alignment)
     const xSnaps = [
-      { from: dragX, to: el.x },           // left-to-left
-      { from: dragX, to: elRight },         // left-to-right
-      { from: dragRight, to: el.x },        // right-to-left
-      { from: dragRight, to: elRight },     // right-to-right
-      { from: dragCx, to: elCx },           // center-to-center
+      { from: dragX, to: el.x, edge: 'left' as const },
+      { from: dragX, to: elRight, edge: 'right' as const },
+      { from: dragRight, to: el.x, edge: 'left' as const },
+      { from: dragRight, to: elRight, edge: 'right' as const },
+      { from: dragCx, to: elCx, edge: 'centerX' as const },
     ];
 
     for (const snap of xSnaps) {
@@ -101,19 +103,19 @@ export function snapToElements(
         bestDx = diff;
         snappedX = dragX + (snap.to - snap.from);
         guides.length = 0; // Clear old guides for this axis
-        guides.push({ type: 'vertical', position: snap.to });
+        guides.push({ type: 'vertical', position: snap.to, targetElementId: el.id, targetEdge: snap.edge });
       } else if (diff === bestDx && diff < SNAP_THRESHOLD) {
-        guides.push({ type: 'vertical', position: snap.to });
+        guides.push({ type: 'vertical', position: snap.to, targetElementId: el.id, targetEdge: snap.edge });
       }
     }
 
     // Horizontal snaps (y-axis alignment)
     const ySnaps = [
-      { from: dragY, to: el.y },            // top-to-top
-      { from: dragY, to: elBottom },         // top-to-bottom
-      { from: dragBottom, to: el.y },        // bottom-to-top
-      { from: dragBottom, to: elBottom },    // bottom-to-bottom
-      { from: dragCy, to: elCy },           // center-to-center
+      { from: dragY, to: el.y, edge: 'top' as const },
+      { from: dragY, to: elBottom, edge: 'bottom' as const },
+      { from: dragBottom, to: el.y, edge: 'top' as const },
+      { from: dragBottom, to: elBottom, edge: 'bottom' as const },
+      { from: dragCy, to: elCy, edge: 'centerY' as const },
     ];
 
     for (const snap of ySnaps) {
@@ -125,9 +127,9 @@ export function snapToElements(
         const vertGuides = guides.filter(g => g.type === 'vertical');
         guides.length = 0;
         guides.push(...vertGuides);
-        guides.push({ type: 'horizontal', position: snap.to });
+        guides.push({ type: 'horizontal', position: snap.to, targetElementId: el.id, targetEdge: snap.edge });
       } else if (diff === bestDy && diff < SNAP_THRESHOLD) {
-        guides.push({ type: 'horizontal', position: snap.to });
+        guides.push({ type: 'horizontal', position: snap.to, targetElementId: el.id, targetEdge: snap.edge });
       }
     }
   }

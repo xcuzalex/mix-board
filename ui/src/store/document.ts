@@ -1,18 +1,28 @@
-import { create } from 'zustand';
-import { immer } from 'zustand/middleware/immer';
-import type { Element } from '../types/element';
-import type { AppState } from '../types/document';
-import { createDocument } from '../types/document';
-import { generateId } from '../utils/id';
+import { create } from "zustand";
+import { immer } from "zustand/middleware/immer";
+import type { Element } from "../types/element";
+import type { AppState, EmbeddedFile } from "../types/document";
+import { createDocument } from "../types/document";
+import { generateId } from "../utils/id";
+import { queueHydrateEmbeddedFiles } from "../utils/embedded-files";
 
 interface HistoryEntry {
   elements: Element[];
+  appState: AppState;
+  files: Record<string, EmbeddedFile>;
+}
+
+export interface DocumentTransactionDraft {
+  elements: Element[];
+  appState: AppState;
+  files: Record<string, EmbeddedFile>;
 }
 
 interface DocumentStore {
   // Document state
   elements: Element[];
   appState: AppState;
+  files: Record<string, EmbeddedFile>;
   filePath: string | null;
   isDirty: boolean;
 
@@ -26,9 +36,15 @@ interface DocumentStore {
   updateElement: (id: string, updates: Partial<Element>) => void;
   moveElements: (ids: string[], dx: number, dy: number) => void;
   setElements: (elements: Element[]) => void;
+  addEmbeddedFile: (file: EmbeddedFile) => void;
+  removeEmbeddedFile: (id: string) => void;
   loadDocument: (json: string) => void;
   newDocument: () => void;
   setFilePath: (path: string | null) => void;
+  applyTransaction: (
+    recipe: (draft: DocumentTransactionDraft) => void,
+    options?: { pushHistory?: boolean; markDirty?: boolean },
+  ) => void;
 
   // Layer ordering
   bringToFront: (ids: string[]) => void;
@@ -41,8 +57,14 @@ interface DocumentStore {
   ungroupElements: (ids: string[]) => void;
 
   // Alignment
-  alignElements: (ids: string[], alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
-  distributeElements: (ids: string[], direction: 'horizontal' | 'vertical') => void;
+  alignElements: (
+    ids: string[],
+    alignment: "left" | "center" | "right" | "top" | "middle" | "bottom",
+  ) => void;
+  distributeElements: (
+    ids: string[],
+    direction: "horizontal" | "vertical",
+  ) => void;
 
   // Duplicate
   duplicateElements: (ids: string[]) => string[];
@@ -58,10 +80,21 @@ interface DocumentStore {
 
 const MAX_HISTORY = 100;
 
+function cloneHistoryEntry(
+  state: Pick<DocumentStore, "elements" | "appState" | "files">,
+): HistoryEntry {
+  return {
+    elements: structuredClone(state.elements),
+    appState: structuredClone(state.appState),
+    files: structuredClone(state.files),
+  };
+}
+
 export const useDocumentStore = create<DocumentStore>()(
   immer((set, get) => ({
     elements: [],
     appState: createDocument().appState,
+    files: createDocument().files,
     filePath: null,
     isDirty: false,
     undoStack: [],
@@ -110,17 +143,32 @@ export const useDocumentStore = create<DocumentStore>()(
         state.isDirty = true;
       }),
 
+    addEmbeddedFile: (file) =>
+      set((state) => {
+        state.files[file.id] = file;
+        state.isDirty = true;
+      }),
+
+    removeEmbeddedFile: (id) =>
+      set((state) => {
+        delete state.files[id];
+        state.isDirty = true;
+      }),
+
     loadDocument: (json) =>
       set((state) => {
         try {
           const doc = JSON.parse(json);
+          const files = structuredClone(doc.files || {});
           state.elements = doc.elements || [];
           state.appState = doc.appState || createDocument().appState;
+          state.files = files;
           state.isDirty = false;
           state.undoStack = [];
           state.redoStack = [];
+          queueHydrateEmbeddedFiles(files);
         } catch {
-          console.error('Failed to load document');
+          console.error("Failed to load document");
         }
       }),
 
@@ -129,10 +177,12 @@ export const useDocumentStore = create<DocumentStore>()(
         const doc = createDocument();
         state.elements = doc.elements;
         state.appState = doc.appState;
+        state.files = doc.files;
         state.filePath = null;
         state.isDirty = false;
         state.undoStack = [];
         state.redoStack = [];
+        queueHydrateEmbeddedFiles(doc.files);
       }),
 
     setFilePath: (path) =>
@@ -194,35 +244,53 @@ export const useDocumentStore = create<DocumentStore>()(
 
         let ref: number;
         switch (alignment) {
-          case 'left':
-            ref = Math.min(...targets.map(e => e.x));
-            targets.forEach(e => { e.x = ref; e.updatedAt = Date.now(); });
+          case "left":
+            ref = Math.min(...targets.map((e) => e.x));
+            targets.forEach((e) => {
+              e.x = ref;
+              e.updatedAt = Date.now();
+            });
             break;
-          case 'center': {
-            const minX = Math.min(...targets.map(e => e.x));
-            const maxX = Math.max(...targets.map(e => e.x + e.width));
+          case "center": {
+            const minX = Math.min(...targets.map((e) => e.x));
+            const maxX = Math.max(...targets.map((e) => e.x + e.width));
             ref = (minX + maxX) / 2;
-            targets.forEach(e => { e.x = ref - e.width / 2; e.updatedAt = Date.now(); });
+            targets.forEach((e) => {
+              e.x = ref - e.width / 2;
+              e.updatedAt = Date.now();
+            });
             break;
           }
-          case 'right':
-            ref = Math.max(...targets.map(e => e.x + e.width));
-            targets.forEach(e => { e.x = ref - e.width; e.updatedAt = Date.now(); });
+          case "right":
+            ref = Math.max(...targets.map((e) => e.x + e.width));
+            targets.forEach((e) => {
+              e.x = ref - e.width;
+              e.updatedAt = Date.now();
+            });
             break;
-          case 'top':
-            ref = Math.min(...targets.map(e => e.y));
-            targets.forEach(e => { e.y = ref; e.updatedAt = Date.now(); });
+          case "top":
+            ref = Math.min(...targets.map((e) => e.y));
+            targets.forEach((e) => {
+              e.y = ref;
+              e.updatedAt = Date.now();
+            });
             break;
-          case 'middle': {
-            const minY = Math.min(...targets.map(e => e.y));
-            const maxY = Math.max(...targets.map(e => e.y + e.height));
+          case "middle": {
+            const minY = Math.min(...targets.map((e) => e.y));
+            const maxY = Math.max(...targets.map((e) => e.y + e.height));
             ref = (minY + maxY) / 2;
-            targets.forEach(e => { e.y = ref - e.height / 2; e.updatedAt = Date.now(); });
+            targets.forEach((e) => {
+              e.y = ref - e.height / 2;
+              e.updatedAt = Date.now();
+            });
             break;
           }
-          case 'bottom':
-            ref = Math.max(...targets.map(e => e.y + e.height));
-            targets.forEach(e => { e.y = ref - e.height; e.updatedAt = Date.now(); });
+          case "bottom":
+            ref = Math.max(...targets.map((e) => e.y + e.height));
+            targets.forEach((e) => {
+              e.y = ref - e.height;
+              e.updatedAt = Date.now();
+            });
             break;
         }
         state.isDirty = true;
@@ -234,11 +302,12 @@ export const useDocumentStore = create<DocumentStore>()(
         const targets = state.elements.filter(e => idSet.has(e.id));
         if (targets.length < 3) return;
 
-        if (direction === 'horizontal') {
+        if (direction === "horizontal") {
           targets.sort((a, b) => a.x - b.x);
           const totalWidth = targets.reduce((sum, e) => sum + e.width, 0);
           const minX = targets[0].x;
-          const maxX = targets[targets.length - 1].x + targets[targets.length - 1].width;
+          const maxX =
+            targets[targets.length - 1].x + targets[targets.length - 1].width;
           const gap = (maxX - minX - totalWidth) / (targets.length - 1);
           let currentX = minX;
           for (const el of targets) {
@@ -250,7 +319,8 @@ export const useDocumentStore = create<DocumentStore>()(
           targets.sort((a, b) => a.y - b.y);
           const totalHeight = targets.reduce((sum, e) => sum + e.height, 0);
           const minY = targets[0].y;
-          const maxY = targets[targets.length - 1].y + targets[targets.length - 1].height;
+          const maxY =
+            targets[targets.length - 1].y + targets[targets.length - 1].height;
           const gap = (maxY - minY - totalHeight) / (targets.length - 1);
           let currentY = minY;
           for (const el of targets) {
@@ -288,7 +358,9 @@ export const useDocumentStore = create<DocumentStore>()(
           }
         }
         for (const el of state.elements) {
-          const newGroupIds = el.groupIds.filter(gid => !groupIdsToRemove.has(gid));
+          const newGroupIds = el.groupIds.filter(
+            (gid) => !groupIdsToRemove.has(gid),
+          );
           if (newGroupIds.length !== el.groupIds.length) {
             el.groupIds = newGroupIds;
             el.updatedAt = Date.now();
@@ -302,7 +374,7 @@ export const useDocumentStore = create<DocumentStore>()(
       const newIds: string[] = [];
       set((state) => {
         for (const id of ids) {
-          const el = state.elements.find(e => e.id === id);
+          const el = state.elements.find((e) => e.id === id);
           if (!el) continue;
           const newId = generateId();
           newIds.push(newId);
@@ -321,9 +393,7 @@ export const useDocumentStore = create<DocumentStore>()(
 
     pushHistory: () =>
       set((state) => {
-        const entry: HistoryEntry = {
-          elements: structuredClone(get().elements),
-        };
+        const entry = cloneHistoryEntry(get());
         state.undoStack.push(entry);
         if (state.undoStack.length > MAX_HISTORY) {
           state.undoStack.shift();
@@ -332,34 +402,53 @@ export const useDocumentStore = create<DocumentStore>()(
       }),
 
     undo: () => {
-      const { undoStack, elements } = get();
+      const { undoStack } = get();
       if (undoStack.length === 0) return;
+      const currentEntry = cloneHistoryEntry(get());
       set((state) => {
         const entry = state.undoStack.pop()!;
-        state.redoStack.push({
-          elements: structuredClone(elements),
-        });
+        state.redoStack.push(currentEntry);
         state.elements = entry.elements;
+        state.appState = entry.appState;
+        state.files = entry.files;
         state.isDirty = true;
+        queueHydrateEmbeddedFiles(entry.files);
       });
     },
 
     redo: () => {
-      const { redoStack, elements } = get();
+      const { redoStack } = get();
       if (redoStack.length === 0) return;
+      const currentEntry = cloneHistoryEntry(get());
       set((state) => {
         const entry = state.redoStack.pop()!;
-        state.undoStack.push({
-          elements: structuredClone(elements),
-        });
+        state.undoStack.push(currentEntry);
         state.elements = entry.elements;
+        state.appState = entry.appState;
+        state.files = entry.files;
         state.isDirty = true;
+        queueHydrateEmbeddedFiles(entry.files);
       });
     },
 
     setAppState: (updates) =>
       set((state) => {
         Object.assign(state.appState, updates);
+      }),
+
+    applyTransaction: (recipe, options) =>
+      set((state) => {
+        if (options?.pushHistory) {
+          state.undoStack.push(cloneHistoryEntry(get()));
+          if (state.undoStack.length > MAX_HISTORY) {
+            state.undoStack.shift();
+          }
+          state.redoStack = [];
+        }
+        recipe(state as unknown as DocumentTransactionDraft);
+        if (options?.markDirty ?? true) {
+          state.isDirty = true;
+        }
       }),
   })),
 );

@@ -3,8 +3,9 @@ import { Renderer } from '../canvas/renderer';
 import { Viewport } from '../canvas/viewport';
 import { getPlatform } from '../platform';
 import { useDocumentStore } from '../store/document';
-import type { AppState } from '../types/document';
+import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element, LinearElement } from '../types/element';
+import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 
 const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
 const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
@@ -22,14 +23,18 @@ function getElementBounds(element: Element, elements: Element[]) {
   };
 }
 
-function serializeDocument(elements: Element[], appState: AppState) {
+function serializeDocument(
+  elements: Element[],
+  appState: AppState,
+  files: Record<string, EmbeddedFile>,
+) {
   return JSON.stringify({
     type: 'mixboard',
     version: 1,
     source: 'MixBoard/0.1.0',
     elements,
     appState,
-    files: {},
+    files,
   }, null, 2);
 }
 
@@ -96,10 +101,11 @@ export function getDocumentDisplayName(path: string | null) {
 }
 
 export async function saveCurrentDocument() {
-  const { elements, appState, filePath } = useDocumentStore.getState();
+  flushPendingCanvasInteractionState();
+  const { elements, appState, files, filePath } = useDocumentStore.getState();
   const platform = await getPlatform();
   const path = await platform.saveFile(
-    serializeDocument(elements, appState),
+    serializeDocument(elements, appState, files),
     getSuggestedDocumentPath(filePath),
   );
 
@@ -111,6 +117,7 @@ export async function saveCurrentDocument() {
 }
 
 export async function exportCurrentBoardAsImage() {
+  flushPendingCanvasInteractionState();
   const { elements, appState, filePath } = useDocumentStore.getState();
   const canvas = createExportCanvas(elements, appState.viewBackgroundColor);
   if (!canvas) return null;

@@ -26,8 +26,10 @@ interface UIStore {
   viewportX: number;
   viewportY: number;
   zoom: number;
+  targetZoom: number;
   setViewport: (x: number, y: number) => void;
   setZoom: (zoom: number) => void;
+  setTargetZoom: (zoom: number) => void;
   panBy: (dx: number, dy: number) => void;
 
   // UI panels
@@ -77,8 +79,13 @@ export const useUIStore = create<UIStore>()((set) => ({
   viewportX: 0,
   viewportY: 0,
   zoom: 1,
+  targetZoom: 1,
   setViewport: (x, y) => set({ viewportX: x, viewportY: y }),
-  setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
+  setZoom: (zoom) => {
+    const clamped = Math.max(0.1, Math.min(5, zoom));
+    set({ zoom: clamped, targetZoom: clamped });
+  },
+  setTargetZoom: (zoom) => set({ targetZoom: Math.max(0.1, Math.min(5, zoom)) }),
   panBy: (dx, dy) =>
     set((state) => ({
       viewportX: state.viewportX + dx,

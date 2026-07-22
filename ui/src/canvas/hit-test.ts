@@ -1,8 +1,9 @@
-import type { Element } from '../types/element';
+import type { Element, LinearElement } from '../types/element';
 import { pointInRect, pointInEllipse, pointInDiamond } from '../utils/math';
-import { getLinearAbsolutePoints } from './linear';
+import { createSceneIndex, getLinearAbsolutePoints, getLinearBounds, type SceneIndex } from './linear';
 
 const HIT_THRESHOLD = 4;
+const SPATIAL_GRID_SIZE = 500;
 
 /**
  * Quick bounding-box pre-check to skip elements that clearly don't contain the point.
@@ -33,19 +34,109 @@ function elementCouldContainPoint(el: Element, x: number, y: number): boolean {
   }
 }
 
-export function hitTest(elements: Element[], x: number, y: number): Element | null {
+function getElementBBox(el: Element): { x: number; y: number; width: number; height: number } {
+  switch (el.type) {
+    case 'line':
+    case 'arrow': {
+      // Conservative fallback for linear elements when SceneIndex is unavailable
+      const pad = Math.max(el.width, el.height) * 2 + 200;
+      return { x: el.x - pad, y: el.y - pad, width: el.width + pad * 2, height: el.height + pad * 2 };
+    }
+    case 'section':
+    case 'frame':
+      return { x: el.x - 20, y: el.y - 25, width: el.width + 40, height: el.height + 45 };
+    case 'mindmap':
+      return { x: el.x - 50, y: el.y - 50, width: el.width + 100, height: el.height + 100 };
+    default:
+      return { x: el.x, y: el.y, width: el.width, height: el.height };
+  }
+}
+
+export class SpatialIndex {
+  private cells = new Map<string, string[]>();
+  private idSet = new Set<string>();
+
+  constructor(elements: Element[], sceneIndex?: SceneIndex) {
+    for (const el of elements) {
+      let bbox: { x: number; y: number; width: number; height: number };
+      if (el.type === 'line' || el.type === 'arrow') {
+        if (sceneIndex) {
+          bbox = getLinearBounds(el as LinearElement, sceneIndex);
+        } else {
+          bbox = getElementBBox(el);
+        }
+      } else {
+        bbox = getElementBBox(el);
+      }
+      const minGx = Math.floor(bbox.x / SPATIAL_GRID_SIZE);
+      const maxGx = Math.floor((bbox.x + bbox.width) / SPATIAL_GRID_SIZE);
+      const minGy = Math.floor(bbox.y / SPATIAL_GRID_SIZE);
+      const maxGy = Math.floor((bbox.y + bbox.height) / SPATIAL_GRID_SIZE);
+
+      for (let gx = minGx; gx <= maxGx; gx++) {
+        for (let gy = minGy; gy <= maxGy; gy++) {
+          const key = `${gx},${gy}`;
+          const list = this.cells.get(key);
+          if (list) {
+            list.push(el.id);
+          } else {
+            this.cells.set(key, [el.id]);
+          }
+        }
+      }
+      this.idSet.add(el.id);
+    }
+  }
+
+  getCandidateIds(x: number, y: number): string[] {
+    const gx = Math.floor(x / SPATIAL_GRID_SIZE);
+    const gy = Math.floor(y / SPATIAL_GRID_SIZE);
+    const result: string[] = [];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const key = `${gx + dx},${gy + dy}`;
+        const list = this.cells.get(key);
+        if (list) {
+          result.push(...list);
+        }
+      }
+    }
+    return result;
+  }
+
+  hasElement(id: string): boolean {
+    return this.idSet.has(id);
+  }
+}
+
+function resolveSceneIndex(elementsOrScene: Element[] | SceneIndex): SceneIndex {
+  return 'byId' in elementsOrScene ? elementsOrScene : createSceneIndex(elementsOrScene);
+}
+
+export function hitTest(
+  elementsOrScene: Element[] | SceneIndex,
+  x: number,
+  y: number,
+  spatialIndex?: SpatialIndex,
+): Element | null {
+  const scene = resolveSceneIndex(elementsOrScene);
+  const { elements } = scene;
+  const candidateIds = spatialIndex ? new Set(spatialIndex.getCandidateIds(x, y)) : null;
+
   // Test in reverse order (top-most first)
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
+    if (candidateIds && !candidateIds.has(el.id)) continue;
     if (!elementCouldContainPoint(el, x, y)) continue;
-    if (hitTestElement(el, elements, x, y)) {
+    if (hitTestElement(el, scene, x, y)) {
       return el;
     }
   }
   return null;
 }
 
-export function hitTestElement(el: Element, elements: Element[], x: number, y: number): boolean {
+export function hitTestElement(el: Element, elementsOrScene: Element[] | SceneIndex, x: number, y: number): boolean {
+  const scene = resolveSceneIndex(elementsOrScene);
   switch (el.type) {
     case 'rectangle':
     case 'text':
@@ -80,7 +171,7 @@ export function hitTestElement(el: Element, elements: Element[], x: number, y: n
 
     case 'line':
     case 'arrow':
-      return hitTestLinear(el, elements, x, y);
+      return hitTestLinear(el, scene, x, y);
 
     case 'freedraw':
     case 'highlighter':
@@ -98,9 +189,20 @@ function hitTestTriangle(el: Element, px: number, py: number): boolean {
   return pointInRect(px, py, el.x, el.y, el.width, el.height);
 }
 
-function hitTestLinear(el: Element, elements: Element[], px: number, py: number): boolean {
+function hitTestLinear(el: Element, scene: SceneIndex, px: number, py: number): boolean {
   if (el.type !== 'line' && el.type !== 'arrow') return false;
-  const points = getLinearAbsolutePoints(el, elements);
+  const bounds = getLinearBounds(el, scene);
+  const margin = HIT_THRESHOLD;
+  if (
+    px < bounds.x - margin ||
+    px > bounds.x + bounds.width + margin ||
+    py < bounds.y - margin ||
+    py > bounds.y + bounds.height + margin
+  ) {
+    return false;
+  }
+
+  const points = getLinearAbsolutePoints(el, scene);
   for (let i = 0; i < points.length - 1; i++) {
     const [x1, y1] = points[i];
     const [x2, y2] = points[i + 1];
@@ -159,12 +261,13 @@ export type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' |
 
 export function getResizeHandle(
   el: Element,
-  elements: Element[],
+  elementsOrScene: Element[] | SceneIndex,
   x: number, y: number,
   handleSize: number,
 ): HandlePosition | null {
+  const scene = resolveSceneIndex(elementsOrScene);
   if (el.type === 'line' || el.type === 'arrow') {
-    const points = getLinearAbsolutePoints(el, elements);
+    const points = getLinearAbsolutePoints(el, scene);
     if (points.length < 2) return null;
     const hs = handleSize / 2;
     const [startX, startY] = points[0];

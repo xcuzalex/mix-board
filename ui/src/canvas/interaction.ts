@@ -11,13 +11,187 @@ import { snapToGrid, snapToElements, type SnapGuide } from '../utils/math';
 import { hitTest, getResizeHandle, type HandlePosition } from './hit-test';
 import { Viewport } from './viewport';
 import {
-  findNearestBindableElement,
+  findBindableElementWithStickyPreference,
   getConnectionPointFromBinding,
   getLinearAbsolutePoints,
   getLinearBounds,
   normalizeLinearPoints,
 } from './linear';
 import { getDefaultShapeVariant, isShapeTool } from './shape-utils';
+
+type FreehandElement = FreedrawElement | HighlighterElement;
+
+export interface FreehandSample {
+  x: number;
+  y: number;
+  pressure?: number;
+}
+
+const FREEHAND_MIN_DISTANCE = 2;
+const FREEHAND_MIN_PRESSURE = 0.1;
+const FREEHAND_MAX_PRESSURE = 1;
+const FREEHAND_FALLBACK_PRESSURE = 0.55;
+const FREEHAND_FINAL_SIMPLIFY_EPSILON = 0.75;
+const FREEHAND_MIN_POINT_COUNT = 2;
+
+function getFreehandBoundsPadding(element: FreehandElement): number {
+  if (element.type === 'highlighter') {
+    const outlineSize = Math.max(6, element.strokeWidth * 1.7);
+    return outlineSize / 2 + 1;
+  }
+
+  const outlineSize = Math.max(2, element.strokeWidth);
+  const maxTaper = Math.max(
+    Math.max(element.strokeWidth * 0.8, 2),
+    Math.max(element.strokeWidth * 1.1, 3),
+  );
+  return outlineSize / 2 + maxTaper + 1;
+}
+
+function clampFreehandPressure(pressure?: number): number {
+  if (!Number.isFinite(pressure)) {
+    return FREEHAND_FALLBACK_PRESSURE;
+  }
+
+  return Math.max(FREEHAND_MIN_PRESSURE, Math.min(FREEHAND_MAX_PRESSURE, pressure!));
+}
+
+function ensureFreehandPressureAlignment(element: FreehandElement): void {
+  while (element.pressures.length < element.points.length) {
+    element.pressures.push(FREEHAND_FALLBACK_PRESSURE);
+  }
+
+  if (element.pressures.length > element.points.length) {
+    element.pressures.length = element.points.length;
+  }
+}
+
+function getFreehandDistance(
+  a: [number, number],
+  b: [number, number],
+): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function simplifyPointIndices(points: [number, number][], epsilon: number): number[] {
+  if (points.length <= 2) {
+    return points.map((_, index) => index);
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  let maxDist = 0;
+  let maxIndex = 0;
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const dist = perpendicularDistance(points[i], first, last);
+    if (dist > maxDist) {
+      maxDist = dist;
+      maxIndex = i;
+    }
+  }
+
+  if (maxDist > epsilon) {
+    const left = simplifyPointIndices(points.slice(0, maxIndex + 1), epsilon);
+    const right = simplifyPointIndices(points.slice(maxIndex), epsilon).map((index) => index + maxIndex);
+    return [...left.slice(0, -1), ...right];
+  }
+
+  return [0, points.length - 1];
+}
+
+function lightlySimplifyFreehandElement(element: FreehandElement): FreehandElement {
+  if (element.points.length <= FREEHAND_MIN_POINT_COUNT) {
+    return element;
+  }
+
+  const keepIndices = simplifyPointIndices(element.points, FREEHAND_FINAL_SIMPLIFY_EPSILON);
+  if (keepIndices.length === element.points.length) {
+    return element;
+  }
+
+  return {
+    ...element,
+    points: keepIndices.map((index) => element.points[index]),
+    pressures: keepIndices.map((index) => element.pressures[index] ?? FREEHAND_FALLBACK_PRESSURE),
+  };
+}
+
+export function appendFreehandSamples(
+  element: FreehandElement,
+  samples: FreehandSample[],
+): FreehandElement {
+  if (samples.length === 0) {
+    ensureFreehandPressureAlignment(element);
+    return element;
+  }
+
+  ensureFreehandPressureAlignment(element);
+
+  for (const sample of samples) {
+    const localPoint: [number, number] = [sample.x - element.x, sample.y - element.y];
+    const lastPoint = element.points[element.points.length - 1];
+
+    if (lastPoint && getFreehandDistance(lastPoint, localPoint) < FREEHAND_MIN_DISTANCE) {
+      continue;
+    }
+
+    element.points.push(localPoint);
+    element.pressures.push(clampFreehandPressure(sample.pressure));
+  }
+
+  return element;
+}
+
+export function appendFreehandPoint(
+  element: FreehandElement,
+  canvasX: number,
+  canvasY: number,
+  pressure?: number,
+): FreehandElement {
+  return appendFreehandSamples(element, [{ x: canvasX, y: canvasY, pressure }]);
+}
+
+export function finalizeFreehandElement(element: FreehandElement): FreehandElement | null {
+  ensureFreehandPressureAlignment(element);
+
+  if (element.points.length < FREEHAND_MIN_POINT_COUNT) {
+    return null;
+  }
+
+  const simplified = lightlySimplifyFreehandElement(element);
+  const points = simplified.points;
+  const pressures = simplified.pressures;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const [px, py] of points) {
+    minX = Math.min(minX, px);
+    minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px);
+    maxY = Math.max(maxY, py);
+  }
+
+  const padding = getFreehandBoundsPadding(simplified);
+  const paddedMinX = minX - padding;
+  const paddedMinY = minY - padding;
+  const paddedMaxX = maxX + padding;
+  const paddedMaxY = maxY + padding;
+  const normalizedPoints = points.map(([px, py]) => [px - paddedMinX, py - paddedMinY] as [number, number]);
+
+  return {
+    ...simplified,
+    x: simplified.x + paddedMinX,
+    y: simplified.y + paddedMinY,
+    width: paddedMaxX - paddedMinX,
+    height: paddedMaxY - paddedMinY,
+    points: normalizedPoints,
+    pressures,
+  };
+}
 
 function perpendicularDistance(
   point: [number, number],
@@ -71,6 +245,8 @@ export interface InteractionState {
   activeElement: Element | null;
   resizeHandle: HandlePosition | null;
   originalElements: Map<string, { x: number; y: number; width: number; height: number }>;
+  hasDragged: boolean;
+  dragThreshold: number;
 }
 
 export function createInteractionState(): InteractionState {
@@ -82,6 +258,8 @@ export function createInteractionState(): InteractionState {
     activeElement: null,
     resizeHandle: null,
     originalElements: new Map(),
+    hasDragged: false,
+    dragThreshold: 4,
   };
 }
 
@@ -176,6 +354,8 @@ export function handlePointerDown(
             return [sid, { x: sel.x, y: sel.y, width: sel.width, height: sel.height }];
           }),
         );
+        state.hasDragged = false;
+        state.dragThreshold = 4;
         return { action: 'resize', handle };
       }
     }
@@ -196,6 +376,8 @@ export function handlePointerDown(
             return [sid, { x: sel.x, y: sel.y, width: sel.width, height: sel.height }];
           }),
         );
+        state.hasDragged = false;
+        state.dragThreshold = 4;
         return { action: 'drag', element: el, selectedIds };
       }
     }
@@ -236,6 +418,8 @@ export function handlePointerDown(
           return [id, { x: el.x, y: el.y, width: el.width, height: el.height }];
         }),
       );
+      state.hasDragged = false;
+      state.dragThreshold = 4;
 
       return { action: 'drag', element: hit, selectedIds: newSelected };
     }
@@ -250,7 +434,10 @@ export function handlePointerDown(
   });
   if (newElement) {
     if (newElement.type === 'line' || newElement.type === 'arrow') {
-      const bindingTarget = findNearestBindableElement(elements, canvas.x, canvas.y, 16 / viewport.zoom);
+      const bindingTarget = findBindableElementWithStickyPreference(elements, canvas.x, canvas.y, {
+        acquireThreshold: 16 / viewport.zoom,
+        releaseThreshold: 16 / viewport.zoom,
+      });
       const startPoint = bindingTarget?.point ?? [canvas.x, canvas.y];
       newElement.startBinding = bindingTarget
         ? { elementId: bindingTarget.element.id, focus: bindingTarget.focus, gap: 0 }
@@ -280,6 +467,7 @@ export function handlePointerMove(
   activeElement?: Element;
   selectionBox?: { x: number; y: number; width: number; height: number };
   snapGuides?: SnapGuide[];
+  hasDragged?: boolean;
 } {
   const canvas = viewport.screenToCanvas(screenX, screenY);
   state.currentX = canvas.x;
@@ -300,22 +488,7 @@ export function handlePointerMove(
   if (action === 'draw' && state.activeElement) {
     if (state.activeElement.type === 'freedraw' || state.activeElement.type === 'highlighter') {
       const el = state.activeElement as FreedrawElement | HighlighterElement;
-      const newPoint: [number, number] = [canvas.x - el.x, canvas.y - el.y];
-
-      const MIN_DISTANCE = 2;
-      if (el.points.length > 0) {
-        const lastPoint = el.points[el.points.length - 1];
-        const dist = Math.hypot(newPoint[0] - lastPoint[0], newPoint[1] - lastPoint[1]);
-        if (dist < MIN_DISTANCE) {
-          return { activeElement: { ...el } };
-        }
-      }
-
-      el.points.push(newPoint);
-
-      if (el.points.length > 20 && el.points.length % 20 === 0) {
-        el.points = simplifyPoints(el.points, 1.5);
-      }
+      appendFreehandPoint(el, canvas.x, canvas.y);
 
       return { activeElement: { ...el } };
     }
@@ -332,7 +505,12 @@ export function handlePointerMove(
         el.x + (el.points[0]?.[0] ?? 0),
         el.y + (el.points[0]?.[1] ?? 0),
       ];
-      const bindingTarget = findNearestBindableElement(_elements, canvas.x, canvas.y, 16 / viewport.zoom);
+      const bindingTarget = findBindableElementWithStickyPreference(_elements, canvas.x, canvas.y, {
+        acquireThreshold: 16 / viewport.zoom,
+        releaseThreshold: 16 / viewport.zoom,
+        fromPoint: startPoint,
+        currentBinding: el.endBinding,
+      });
       const endPoint = bindingTarget?.point ?? [canvas.x, canvas.y];
       el.endBinding = bindingTarget
         ? { elementId: bindingTarget.element.id, focus: bindingTarget.focus, gap: 0 }
@@ -350,6 +528,14 @@ export function handlePointerMove(
   }
 
   if (action === 'drag') {
+    if (!state.hasDragged) {
+      const distance = Math.hypot(dx, dy);
+      if (distance < state.dragThreshold) {
+        return { updatedElements: new Map(), hasDragged: false };
+      }
+      state.hasDragged = true;
+    }
+
     const updates = new Map<string, Partial<Element>>();
 
     // Calculate the bounding box of all selected elements at new position
@@ -394,6 +580,14 @@ export function handlePointerMove(
   }
 
   if (action === 'resize' && state.resizeHandle) {
+    if (!state.hasDragged) {
+      const distance = Math.hypot(dx, dy);
+      if (distance < state.dragThreshold) {
+        return { updatedElements: new Map(), hasDragged: false };
+      }
+      state.hasDragged = true;
+    }
+
     const updates = new Map<string, Partial<Element>>();
     if (state.resizeHandle === 'start' || state.resizeHandle === 'end') {
       for (const id of selectedIds) {
@@ -404,7 +598,16 @@ export function handlePointerMove(
         const points = getLinearAbsolutePoints(linear, _elements);
         if (points.length < 2) continue;
 
-        const bindingTarget = findNearestBindableElement(_elements, canvas.x, canvas.y, 16 / viewport.zoom);
+        const fromPoint = state.resizeHandle === 'start'
+          ? points[points.length - 1]
+          : points[0];
+        const currentBinding = state.resizeHandle === 'start' ? linear.startBinding : linear.endBinding;
+        const bindingTarget = findBindableElementWithStickyPreference(_elements, canvas.x, canvas.y, {
+          acquireThreshold: 16 / viewport.zoom,
+          releaseThreshold: 16 / viewport.zoom,
+          fromPoint,
+          currentBinding,
+        });
         const nextPoint = bindingTarget?.point ?? ([canvas.x, canvas.y] as [number, number]);
         const nextPoints = [...points] as [number, number][];
 

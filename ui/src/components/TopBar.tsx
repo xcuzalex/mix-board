@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
+import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
 import { exportCurrentBoardAsImage, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 
 const NATIVE_MENU_EVENT = 'mixboard-native-menu';
@@ -13,7 +14,6 @@ export function TopBar() {
   const desktopWindow = isDesktopApp ? getCurrentWindow() : null;
   const filePath = useDocumentStore((s) => s.filePath);
   const isDirty = useDocumentStore((s) => s.isDirty);
-  const elements = useDocumentStore((s) => s.elements);
   const loadDocument = useDocumentStore((s) => s.loadDocument);
   const newDocument = useDocumentStore((s) => s.newDocument);
   const setFilePath = useDocumentStore((s) => s.setFilePath);
@@ -30,6 +30,12 @@ export function TopBar() {
   const ungroupElements = useDocumentStore((s) => s.ungroupElements);
 
   const selectedIds = useUIStore((s) => s.selectedIds);
+  const canUngroup = useDocumentStore((s) =>
+    selectedIds.some((selectedId) => {
+      const element = s.elements.find((candidate) => candidate.id === selectedId);
+      return element !== undefined && element.groupIds.length > 0;
+    }),
+  );
   const setSelectedIds = useUIStore((s) => s.setSelectedIds);
   const setActiveTool = useUIStore((s) => s.setActiveTool);
   const toggleGrid = useUIStore((s) => s.toggleGrid);
@@ -37,12 +43,11 @@ export function TopBar() {
   const setZoom = useUIStore((s) => s.setZoom);
 
   const fileName = getDocumentDisplayName(filePath);
-  const selectedElements = elements.filter((element) => selectedIds.includes(element.id));
   const canGroup = selectedIds.length > 1;
-  const canUngroup = selectedElements.some((element) => element.groupIds.length > 0);
   const windowTitle = `${fileName}${isDirty ? ' *' : ''} - MixBoard`;
 
   const handleOpen = async () => {
+    flushPendingCanvasInteractionState();
     const platform = await getPlatform();
     const result = await platform.openFile();
     if (result) {
@@ -59,6 +64,7 @@ export function TopBar() {
     const runMenuAction = async (actionId: string) => {
       switch (actionId) {
         case 'file.new':
+          flushPendingCanvasInteractionState();
           newDocument();
           return;
         case 'file.open':
@@ -71,18 +77,22 @@ export function TopBar() {
           await exportCurrentBoardAsImage();
           return;
         case 'edit.undo':
+          flushPendingCanvasInteractionState();
           undo();
           return;
         case 'edit.redo':
+          flushPendingCanvasInteractionState();
           redo();
           return;
         case 'edit.duplicate':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           setSelectedIds(duplicateElements(selectedIds));
           return;
         case 'edit.delete':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           removeElements(selectedIds);
           setSelectedIds([]);
@@ -110,31 +120,37 @@ export function TopBar() {
           return;
         case 'arrange.forward':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           bringForward(selectedIds);
           return;
         case 'arrange.backward':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           sendBackward(selectedIds);
           return;
         case 'arrange.front':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           bringToFront(selectedIds);
           return;
         case 'arrange.back':
           if (selectedIds.length === 0) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           sendToBack(selectedIds);
           return;
         case 'arrange.group':
           if (!canGroup) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           groupElements(selectedIds);
           return;
         case 'arrange.ungroup':
           if (!canUngroup) return;
+          flushPendingCanvasInteractionState();
           pushHistory();
           ungroupElements(selectedIds);
           return;
