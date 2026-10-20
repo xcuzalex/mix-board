@@ -36,6 +36,10 @@ export class TauriBridge implements PlatformBridge {
     return path;
   }
 
+  async writeDocumentFile(path: string, data: string): Promise<void> {
+    await writeTextFile(path, data);
+  }
+
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {
     const targetPath = await save({
       title: '导出图片',

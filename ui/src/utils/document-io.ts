@@ -36,7 +36,7 @@ function getElementBounds(element: Element, elements: Element[]) {
   };
 }
 
-function serializeDocument(
+export function serializeDocument(
   elements: Element[],
   appState: AppState,
   files: Record<string, EmbeddedFile>,

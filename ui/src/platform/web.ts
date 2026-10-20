@@ -51,6 +51,11 @@ export class WebBridge implements PlatformBridge {
     return this.saveFile(data, defaultPath);
   }
 
+  async writeDocumentFile(): Promise<void> {
+    // The web build only knows download names, never a writable path.
+    throw new Error('Writing to a file path is not supported on the web');
+  }
+
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {
     const blob = await canvasToBlob(canvas, `image/${format}`);
     if (!blob) return null;

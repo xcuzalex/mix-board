@@ -2,6 +2,8 @@ export interface PlatformBridge {
   saveFile(data: string, defaultPath?: string): Promise<string | null>;
   openFile(): Promise<{ path: string; content: string } | null>;
   saveAsFile(data: string, defaultPath?: string): Promise<string | null>;
+  /** Overwrite a document the user already picked, without a dialog (desktop only). */
+  writeDocumentFile(path: string, data: string): Promise<void>;
   exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null>;
   /** Save a text document (e.g. Markdown export) with a file-type filter. */
   saveTextFile(data: string, defaultPath: string, filter: { name: string; extensions: string[] }): Promise<string | null>;

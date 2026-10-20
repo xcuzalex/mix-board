@@ -4,16 +4,43 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
+import { useAutosaveStore, type AutosaveStatus } from '../utils/autosave';
 import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
 import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 
 const NATIVE_MENU_EVENT = 'mixboard-native-menu';
+
+const AUTOSAVE_LABELS: Record<AutosaveStatus, string> = {
+  idle: '',
+  dirty: '已编辑',
+  saving: '正在保存…',
+  saved: '已保存',
+  draft: '草稿已存到本机',
+  error: '保存失败',
+};
+
+const AUTOSAVE_DOT_CLASSES: Record<AutosaveStatus, string> = {
+  idle: 'bg-transparent',
+  dirty: 'bg-amber-400',
+  saving: 'bg-sky-400 animate-pulse',
+  saved: 'bg-emerald-400',
+  draft: 'bg-emerald-400',
+  error: 'bg-red-500',
+};
+
+function formatSavedAt(timestamp: number | null) {
+  if (timestamp === null) return '';
+  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 export function TopBar() {
   const isDesktopApp = isDesktop();
   const desktopWindow = isDesktopApp ? getCurrentWindow() : null;
   const filePath = useDocumentStore((s) => s.filePath);
   const isDirty = useDocumentStore((s) => s.isDirty);
+  const autosaveStatus = useAutosaveStore((s) => s.status);
+  const lastSavedAt = useAutosaveStore((s) => s.lastSavedAt);
+  const autosaveError = useAutosaveStore((s) => s.error);
   const loadDocument = useDocumentStore((s) => s.loadDocument);
   const newDocument = useDocumentStore((s) => s.newDocument);
   const setFilePath = useDocumentStore((s) => s.setFilePath);
@@ -44,7 +71,12 @@ export function TopBar() {
 
   const fileName = getDocumentDisplayName(filePath);
   const canGroup = selectedIds.length > 1;
-  const windowTitle = `${fileName}${isDirty ? ' *' : ''} - MixBoard`;
+  // Clean documents show no status, like macOS "— Edited" titles.
+  const statusLabel = autosaveStatus === 'idle' && isDirty ? AUTOSAVE_LABELS.dirty : AUTOSAVE_LABELS[autosaveStatus];
+  const statusTooltip = autosaveStatus === 'error'
+    ? `自动保存失败：${autosaveError ?? '未知错误'}`
+    : lastSavedAt !== null ? `上次保存 ${formatSavedAt(lastSavedAt)}` : undefined;
+  const windowTitle = `${fileName}${statusLabel ? ` — ${statusLabel}` : ''} - MixBoard`;
 
   const handleOpen = async () => {
     flushPendingCanvasInteractionState();
@@ -211,7 +243,19 @@ export function TopBar() {
   }, [desktopWindow, windowTitle]);
 
   if (isDesktopApp) {
-    return null;
+    // The native title bar carries the status; only surface failures in-canvas.
+    if (autosaveStatus !== 'error') return null;
+    return (
+      <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 select-none">
+        <div
+          className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-red-200 bg-white/85 px-3 py-1 text-xs font-medium text-red-600 shadow-sm backdrop-blur-xl dark:border-red-400/30 dark:bg-[#1c1c1e]/85 dark:text-red-300"
+          title={statusTooltip}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          {AUTOSAVE_LABELS.error}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -224,9 +268,23 @@ export function TopBar() {
         <div className="flex-1" />
 
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-          <div className="rounded-full border border-slate-200/80 bg-white/84 px-3 py-1 text-xs font-medium text-slate-500 shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-slate-300">
-            {fileName}
-            {isDirty ? ' *' : ''}
+          <div
+            className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-slate-200/80 bg-white/84 px-3 py-1 text-xs font-medium text-slate-500 shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-slate-300"
+            title={statusTooltip}
+          >
+            <span>{fileName}</span>
+            {statusLabel && (
+              <>
+                <span className="text-slate-300 dark:text-slate-500">—</span>
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${AUTOSAVE_DOT_CLASSES[autosaveStatus === 'idle' ? 'dirty' : autosaveStatus]}`}
+                  data-autosave-status={autosaveStatus}
+                />
+                <span className={autosaveStatus === 'error' ? 'text-red-600 dark:text-red-300' : 'text-slate-400 dark:text-slate-400'}>
+                  {statusLabel}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
