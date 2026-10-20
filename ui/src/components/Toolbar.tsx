@@ -168,6 +168,26 @@ export function Toolbar() {
     setShowDrawPanel(false);
   };
 
+  // One-click insert a clean white Markdown note card.
+  const insertCard = () => {
+    const center = getViewportCenter();
+    const element = createElementForTool('sticky_note', center.x, center.y);
+    if (!element) return;
+    const width = 300;
+    const height = 200;
+    element.width = width;
+    element.height = height;
+    element.x = center.x - width / 2;
+    element.y = center.y - height / 2;
+    (element as any).noteColor = 'white';
+    (element as any).fontSize = 16;
+    (element as any).text = '# 标题\n正文，支持 **粗体**、*斜体*、`代码`\n- 列表项\n[ ] 待办';
+    pushHistory();
+    addElement(element);
+    setSelectedIds([element.id]);
+    setActiveTool('select');
+  };
+
   const drawActive = isShapeToolActive(activeTool) || DRAW_TOOL_SET.has(activeTool);
   const toolbarLeft = showOutline ? 'left-[20rem]' : showLibrary ? 'left-[18.5rem]' : 'left-3';
 
@@ -242,6 +262,13 @@ export function Toolbar() {
           </ToolbarButton>
 
           <Divider />
+
+          <ToolbarButton active={false} label="卡片（Markdown 笔记）" onClick={insertCard}>
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2.5" />
+              <path d="M8 9h8M8 13h8M8 17h5" />
+            </svg>
+          </ToolbarButton>
 
           {NOTE_TOOLS.map((item) => (
             <ToolbarButton

@@ -23,6 +23,7 @@ import {
   type GetShapePath,
 } from './render/shapes';
 import { drawLinear } from './render/linear';
+import { drawMarkdown } from './render/markdown';
 import {
   type Rect,
   getMindmapLayoutSignature,
@@ -920,18 +921,18 @@ export class Renderer {
     ctx.roundRect(el.x, el.y, el.width, el.height, 4);
     ctx.clip();
 
-    // Text (skip if being edited - textarea overlay handles it)
+    // Markdown content (skip if being edited - textarea overlay handles it)
     if (el.text && this.editingElementId !== el.id) {
-      ctx.fillStyle = '#1B1B1F';
-      ctx.font = `${el.fontSize}px Inter, system-ui, sans-serif`;
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
       const padding = 12;
-      const lines = this.wrapText(el.text, el.width - padding * 2, ctx.font, ctx);
-      const lineHeight = el.fontSize * 1.4;
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], el.x + padding, el.y + padding + i * lineHeight, el.width - padding * 2);
-      }
+      drawMarkdown(ctx, el.text, {
+        x: el.x + padding,
+        y: el.y + padding,
+        width: el.width - padding * 2,
+        fontSize: el.fontSize ?? 16,
+        fontFamily: el.fontFamily ?? "'Kalam', 'Inter', system-ui, sans-serif",
+        color: '#1B1B1F',
+      });
     }
 
     // Author display (bottom left)
@@ -1231,34 +1232,6 @@ export class Renderer {
     }
 
     ctx.restore();
-  }
-
-  private wrapText(text: string, maxWidth: number, font: string, ctx: CanvasRenderingContext2D): string[] {
-    this.refreshTextLayoutCachesIfNeeded();
-    const key = `${font}|${Math.round(maxWidth)}|${text}`;
-    const cached = this.stickyWrapCache.get(key);
-    if (cached) return cached;
-
-    const paragraphs = text.split('\n');
-    const lines: string[] = [];
-    for (const para of paragraphs) {
-      if (!para) { lines.push(''); continue; }
-      const words = para.split(' ');
-      let line = '';
-      for (const word of words) {
-        const test = line ? `${line} ${word}` : word;
-        if (ctx.measureText(test).width > maxWidth && line) {
-          lines.push(line);
-          line = word;
-        } else {
-          line = test;
-        }
-      }
-      if (line) lines.push(line);
-    }
-    this.stickyWrapCache.set(key, lines);
-    this.trimCache(this.stickyWrapCache, 1000);
-    return lines;
   }
 
   private applyStrokeStyle(ctx: CanvasRenderingContext2D, style: string) {
