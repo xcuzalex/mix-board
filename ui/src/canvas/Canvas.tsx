@@ -162,7 +162,7 @@ export function Canvas() {
   const lastMoveTimeRef = useRef(0);
   const lastWheelTimeRef = useRef(0);
   const pendingElementUpdatesRef = useRef<Map<string, Partial<Element>> | null>(null);
-  const dimmedElementIdsRef = useRef<Set<string>>(new Set());
+  const hiddenElementIdsRef = useRef<Set<string>>(new Set());
   const lassoSelectedIdsRef = useRef<string[]>([]);
   const drawingBindingStateRef = useRef<{ start: StickyEndpointState; end: StickyEndpointState }>({
     start: { binding: null, anchor: null },
@@ -283,10 +283,10 @@ export function Canvas() {
     const nextHiddenIds = nextUpdates
       ? buildPreviewElements(elements, nextUpdates).hiddenIds
       : new Set<string>();
-    const hiddenIdsChanged = !areIdSetsEqual(dimmedElementIdsRef.current, nextHiddenIds);
+    const hiddenIdsChanged = !areIdSetsEqual(hiddenElementIdsRef.current, nextHiddenIds);
 
     pendingElementUpdatesRef.current = nextUpdates;
-    dimmedElementIdsRef.current = nextHiddenIds;
+    hiddenElementIdsRef.current = nextHiddenIds;
 
     if (hiddenIdsChanged) {
       invalidateScene();
@@ -307,8 +307,9 @@ export function Canvas() {
       appState.gridSize,
       editingElement?.id ?? editingMindmapNode?.elementId ?? null,
       editingMindmapNode?.nodeId ?? null,
-      undefined,
-      dimmedElementIdsRef.current,
+      // Elements being dragged/resized are drawn by the overlay preview;
+      // hide their originals instead of leaving a faded ghost behind.
+      hiddenElementIdsRef.current,
     );
   }, [
     elements,

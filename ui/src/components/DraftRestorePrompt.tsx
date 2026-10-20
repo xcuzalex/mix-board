@@ -16,7 +16,8 @@ export function DraftRestorePrompt() {
   const draft = useAutosaveStore((s) => s.pendingDraft);
   if (!draft) return null;
 
-  const top = isDesktop() ? 'top-4' : 'top-14';
+  // Sits below the top-docked toolbar.
+  const top = isDesktop() ? 'top-16' : 'top-[6.5rem]';
 
   return (
     <div className={`pointer-events-none absolute inset-x-0 ${top} z-50 flex justify-center px-4`}>

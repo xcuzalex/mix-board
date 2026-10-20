@@ -472,7 +472,6 @@ export class Renderer {
     editingElementId?: string | null,
     editingMindmapNodeId?: string | null,
     excludedElementIds?: Set<string>,
-    dimmedElementIds?: Set<string>,
   ) {
     this.refreshTextLayoutCachesIfNeeded();
     this.sceneIndex = this.getSceneIndex(elements);
@@ -499,8 +498,7 @@ export class Renderer {
       if (el.id === editingElementId) continue;
       if (!this.isElementInExpandedViewport(el, vpRect)) continue;
       if (!this.isElementVisible(el)) continue;
-      const isDimmed = dimmedElementIds?.has(el.id);
-      this.renderElement(el, false, isDimmed ? 0.3 : 1);
+      this.renderElement(el, false);
     }
   }
 

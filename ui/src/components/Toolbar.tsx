@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createElementForTool } from '../canvas/interaction';
 import { useDocumentStore } from '../store/document';
+import { isDesktop } from '../platform';
 import { useUIStore } from '../store/ui';
 import type { ShapeVariant } from '../types/element';
 import type { ToolType } from '../types/tool';
@@ -12,8 +13,9 @@ import {
   type LibraryItem,
 } from './shapeLibrary';
 
-// Note-first toolbar: the primary column foregrounds note tools; drawing tools
-// live in a secondary "绘图" flyout so the surface stays calm (苹果无边际).
+// Note-first toolbar, docked top-center like Freeform: note tools up front,
+// drawing tools tucked into a "绘图" flyout. It slides away while you work on
+// the canvas and comes back when the pointer nears the top edge (unless pinned).
 const NOTE_TOOLS: Array<{ tool: ToolType; label: string }> = [
   { tool: 'text', label: '文本' },
   { tool: 'sticky_note', label: '便签' },
@@ -30,6 +32,12 @@ const DRAW_TOOLS: Array<{ tool: ToolType; label: string }> = [
 
 const DRAW_TOOL_SET = new Set<ToolType>(['arrow', 'line', 'freedraw', 'section', 'image']);
 
+const PIN_STORAGE_KEY = 'mixboard.toolbar.pinned';
+const REVEAL_ZONE_PX = 60;
+const AUTO_HIDE_DELAY_MS = 900;
+const INITIAL_SHOW_MS = 2500;
+const TOOL_FLASH_MS = 1200;
+
 export function Toolbar() {
   const activeTool = useUIStore((s) => s.activeTool);
   const setActiveTool = useUIStore((s) => s.setActiveTool);
@@ -39,7 +47,6 @@ export function Toolbar() {
   const viewportX = useUIStore((s) => s.viewportX);
   const viewportY = useUIStore((s) => s.viewportY);
   const zoom = useUIStore((s) => s.zoom);
-  const showOutline = useUIStore((s) => s.showOutline);
   const addElement = useDocumentStore((s) => s.addElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
 
@@ -47,6 +54,17 @@ export function Toolbar() {
   const [showLibrary, setShowLibrary] = useState(false);
   const [query, setQuery] = useState('');
   const closeTimerRef = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const hoveringRef = useRef(false);
+  const hideTimerRef = useRef<number | null>(null);
+  const [revealed, setRevealed] = useState(true);
+  const [pinned, setPinned] = useState(() => {
+    try {
+      return localStorage.getItem(PIN_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const clearCloseTimer = () => {
     if (closeTimerRef.current !== null) {
@@ -70,6 +88,73 @@ export function Toolbar() {
   };
 
   useEffect(() => () => clearCloseTimer(), []);
+
+  const keepOpen = pinned || showDrawPanel || showLibrary;
+
+  const clearHideTimer = () => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
+
+  const scheduleHide = useCallback((delay = AUTO_HIDE_DELAY_MS) => {
+    if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      if (!hoveringRef.current) setRevealed(false);
+    }, delay);
+  }, []);
+
+  const reveal = useCallback((thenHideAfter?: number) => {
+    setRevealed(true);
+    if (thenHideAfter !== undefined) scheduleHide(thenHideAfter);
+    else if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, [scheduleHide]);
+
+  // Reveal near the top edge of the canvas; hide again once the pointer leaves.
+  useEffect(() => {
+    if (keepOpen) {
+      setRevealed(true);
+      return;
+    }
+    scheduleHide(INITIAL_SHOW_MS);
+    const onMove = (event: PointerEvent) => {
+      // The wrapper never moves (only the inner bar slides), so its top marks the dock.
+      const top = rootRef.current?.getBoundingClientRect().top ?? 0;
+      const nearTop = event.clientY < top + REVEAL_ZONE_PX && event.buttons === 0;
+      if (nearTop) reveal();
+      else if (!hoveringRef.current && hideTimerRef.current === null) scheduleHide();
+    };
+    window.addEventListener('pointermove', onMove);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      clearHideTimer();
+    };
+  }, [keepOpen, reveal, scheduleHide]);
+
+  // Keyboard tool switches briefly show which tool is now active.
+  const lastToolRef = useRef(activeTool);
+  useEffect(() => {
+    if (lastToolRef.current === activeTool) return;
+    lastToolRef.current = activeTool;
+    if (!keepOpen && !hoveringRef.current) reveal(TOOL_FLASH_MS);
+  }, [activeTool, keepOpen, reveal]);
+
+  const togglePinned = () => {
+    setPinned((value) => {
+      const next = !value;
+      try {
+        localStorage.setItem(PIN_STORAGE_KEY, next ? '1' : '0');
+      } catch {
+        // Pinning is a per-viewer convenience; ignore storage failures.
+      }
+      return next;
+    });
+  };
 
   const filteredSections = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -189,7 +274,7 @@ export function Toolbar() {
   };
 
   const drawActive = isShapeToolActive(activeTool) || DRAW_TOOL_SET.has(activeTool);
-  const toolbarLeft = showOutline ? 'left-[20rem]' : showLibrary ? 'left-[18.5rem]' : 'left-3';
+  const shown = revealed || keepOpen;
 
   return (
     <>
@@ -252,8 +337,32 @@ export function Toolbar() {
         </div>
       )}
 
-      <div className={`absolute top-1/2 z-20 -translate-y-1/2 transition-all duration-200 ${toolbarLeft}`}>
-        <div className="flex w-[52px] flex-col items-center gap-0.5 rounded-[20px] border border-black/[0.06] bg-white/70 p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.10)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/70">
+      <div
+        ref={rootRef}
+        className={`absolute left-1/2 z-20 -translate-x-1/2 ${isDesktop() ? 'top-3' : 'top-14'}`}
+        onMouseEnter={() => {
+          hoveringRef.current = true;
+          reveal();
+        }}
+        onMouseLeave={() => {
+          hoveringRef.current = false;
+          if (!keepOpen) scheduleHide();
+        }}
+      >
+        {/* Slim handle left behind while the toolbar is tucked away */}
+        <button
+          aria-label="显示工具栏"
+          className={`absolute left-1/2 top-0 h-5 w-16 -translate-x-1/2 transition-opacity duration-200 ${shown ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+          onClick={() => reveal()}
+        >
+          <span className="mx-auto block h-1 w-9 rounded-full bg-black/15 dark:bg-white/20" />
+        </button>
+
+        <div
+          className={`flex items-center gap-0.5 rounded-[18px] border border-black/[0.06] bg-white/75 p-1 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.10)] backdrop-blur-xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] dark:border-white/10 dark:bg-[#1c1c1e]/75 ${
+            shown ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-[calc(100%+16px)] opacity-0'
+          }`}
+        >
           <ToolbarButton active={activeTool === 'select'} label="选择" onClick={() => pickTool('select')}>
             <ToolGlyph tool="select" className="h-5 w-5" />
           </ToolbarButton>
@@ -300,7 +409,7 @@ export function Toolbar() {
             </ToolbarButton>
 
             {showDrawPanel && !showLibrary && (
-              <div className="absolute left-full top-0 ml-3 w-60 rounded-[20px] border border-black/[0.06] bg-white/80 p-3 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/85">
+              <div className="absolute left-1/2 top-full mt-3 w-60 -translate-x-1/2 rounded-[20px] border border-black/[0.06] bg-white/80 p-3 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/85">
                 <div className="mb-2 px-1 text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">工具</div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {DRAW_TOOLS.map((item) => (
@@ -352,6 +461,15 @@ export function Toolbar() {
               </div>
             )}
           </div>
+
+          <Divider />
+
+          <ToolbarButton active={pinned} label={pinned ? '取消固定（自动隐藏）' : '固定工具栏'} onClick={togglePinned}>
+            <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 4h6l-1 5 3 3H7l3-3z" />
+              <path d="M12 12v8" />
+            </svg>
+          </ToolbarButton>
         </div>
       </div>
     </>
@@ -359,7 +477,7 @@ export function Toolbar() {
 }
 
 function Divider() {
-  return <div className="my-1 h-px w-6 bg-black/[0.07] dark:bg-white/10" />;
+  return <div className="mx-1 h-6 w-px bg-black/[0.07] dark:bg-white/10" />;
 }
 
 function ToolbarButton({
@@ -375,7 +493,7 @@ function ToolbarButton({
 }) {
   return (
     <button
-      className={`flex h-10 w-10 items-center justify-center rounded-[14px] transition ${
+      className={`flex h-9 w-9 items-center justify-center rounded-[12px] transition ${
         active
           ? 'bg-[#007aff]/12 text-[#007aff] dark:bg-[#0a84ff]/20 dark:text-[#4aa8ff]'
           : 'text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
