@@ -10,6 +10,7 @@ import {
   findMindmapParent,
   getMindmapSiblings,
 } from '../canvas/mindmap-ops';
+import { buildLinkIndex, getNoteTitle } from '../utils/links';
 import type { Element, MindmapElement, MindmapNode } from '../types/element';
 
 /**
@@ -69,6 +70,8 @@ export function OutlinePanel() {
   const selectedIds = useUIStore((s) => s.selectedIds);
   const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
   const setSelectedMindmapNode = useUIStore((s) => s.setSelectedMindmapNode);
+  const zoom = useUIStore((s) => s.zoom);
+  const setViewport = useUIStore((s) => s.setViewport);
   const elements = useDocumentStore((s) => s.elements);
   const updateElement = useDocumentStore((s) => s.updateElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
@@ -76,6 +79,20 @@ export function OutlinePanel() {
   const [pendingFocusKey, setPendingFocusKey] = useState<string | null>(null);
 
   const rows = useMemo(() => buildRows(elements), [elements]);
+  const linkIndex = useMemo(() => buildLinkIndex(elements), [elements]);
+  const backlinkSources = (selectedIds.length === 1 ? linkIndex.backlinks.get(selectedIds[0]) : undefined) ?? [];
+
+  const focusElement = (el: Element) => {
+    setSelectedIds([el.id]);
+    setSelectedMindmapNode(el.type === 'mindmap' ? { elementId: el.id, nodeId: (el as MindmapElement).rootNode.id } : null);
+    const canvas = document.querySelector('canvas');
+    const rect = canvas?.getBoundingClientRect();
+    const w = rect?.width ?? window.innerWidth;
+    const h = rect?.height ?? window.innerHeight;
+    const cx = el.x + el.width / 2;
+    const cy = el.y + el.height / 2;
+    setViewport(w / 2 - cx * zoom, h / 2 - cy * zoom);
+  };
 
   if (!showOutline) {
     return (
@@ -221,6 +238,30 @@ export function OutlinePanel() {
           })
         )}
       </div>
+
+      {backlinkSources.length > 0 && (
+        <div className="border-t border-black/[0.06] px-3 py-2.5 dark:border-white/10">
+          <div className="mb-1.5 px-1 text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">
+            反向链接 · {backlinkSources.length}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {backlinkSources.map((src) => (
+              <button
+                key={src.id}
+                className="flex items-center gap-2 rounded-lg px-2 py-1 text-left text-[13px] text-slate-600 transition hover:bg-black/[0.04] hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white"
+                onClick={() => focusElement(src)}
+                title="跳转到该笔记"
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0 text-[#007aff]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7L12 19" />
+                </svg>
+                <span className="truncate">{getNoteTitle(src) || '未命名'}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

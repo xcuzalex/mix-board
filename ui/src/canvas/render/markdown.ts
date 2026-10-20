@@ -17,9 +17,10 @@ export interface MarkdownOptions {
   color: string;
 }
 
-type InlineRun = { text: string; bold: boolean; italic: boolean; code: boolean };
+type InlineRun = { text: string; bold: boolean; italic: boolean; code: boolean; link: boolean };
 
 const CODE_FAMILY = "'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace";
+const LINK_COLOR = '#007AFF';
 
 function tokenizeInline(text: string): InlineRun[] {
   const runs: InlineRun[] = [];
@@ -28,10 +29,20 @@ function tokenizeInline(text: string): InlineRun[] {
   let code = false;
   let buf = '';
   const flush = () => {
-    if (buf) runs.push({ text: buf, bold, italic, code });
+    if (buf) runs.push({ text: buf, bold, italic, code, link: false });
     buf = '';
   };
   for (let i = 0; i < text.length; i += 1) {
+    // [[wiki link]] — rendered as a single link run (brackets hidden).
+    if (!code && text[i] === '[' && text[i + 1] === '[') {
+      const close = text.indexOf(']]', i + 2);
+      if (close !== -1) {
+        flush();
+        runs.push({ text: text.slice(i + 2, close), bold, italic, code: false, link: true });
+        i = close + 1;
+        continue;
+      }
+    }
     if (text[i] === '`') { flush(); code = !code; continue; }
     if (!code && text[i] === '*' && text[i + 1] === '*') { flush(); bold = !bold; i += 1; continue; }
     if (!code && text[i] === '*') { flush(); italic = !italic; continue; }
@@ -145,7 +156,9 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
         y += lineHeight;
         cursorX = left;
       }
-      ctx.fillStyle = block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
+      ctx.fillStyle = run.link
+        ? LINK_COLOR
+        : block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
       ctx.textBaseline = 'top';
       ctx.fillText(word, cursorX, y);
       cursorX += w;
