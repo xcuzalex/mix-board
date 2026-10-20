@@ -40,6 +40,7 @@ const TOOL_FLASH_MS = 1200;
 
 export function Toolbar() {
   const activeTool = useUIStore((s) => s.activeTool);
+  const showOutline = useUIStore((s) => s.showOutline);
   const setActiveTool = useUIStore((s) => s.setActiveTool);
   const activeShapeVariant = useUIStore((s) => s.activeShapeVariant);
   const setActiveShapeVariant = useUIStore((s) => s.setActiveShapeVariant);
@@ -279,7 +280,7 @@ export function Toolbar() {
   return (
     <>
       {showLibrary && (
-        <div className="absolute left-3 top-4 bottom-4 z-20 w-64 overflow-hidden rounded-[20px] border border-black/[0.06] bg-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/80">
+        <div className={`absolute bottom-4 top-16 z-20 w-64 overflow-hidden rounded-[20px] ${showOutline ? 'left-[19.5rem]' : 'left-3'} border border-black/[0.06] bg-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/80`}>
           <div className="border-b border-black/[0.06] px-4 py-3 dark:border-white/10">
             <div className="flex items-center justify-between">
               <div className="text-[15px] font-semibold tracking-tight text-slate-800 dark:text-slate-100">素材</div>
