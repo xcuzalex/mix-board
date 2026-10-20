@@ -4,6 +4,7 @@ import { Toolbar } from './components/Toolbar';
 import { TopBar } from './components/TopBar';
 import { ZoomControl } from './components/ZoomControl';
 import { PropertyPanel } from './components/PropertyPanel';
+import { OutlinePanel } from './components/OutlinePanel';
 import { isDesktop } from './platform';
 import { useUIStore } from './store/ui';
 import { applyTheme, watchSystemTheme } from './theme';
@@ -26,6 +27,7 @@ export default function App() {
       <TopBar />
       <div className={`absolute inset-0 ${topInset}`}>
         <Canvas />
+        <OutlinePanel />
         <Toolbar />
         <PropertyPanel />
         <ZoomControl />

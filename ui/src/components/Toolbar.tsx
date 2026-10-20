@@ -39,6 +39,7 @@ export function Toolbar() {
   const viewportX = useUIStore((s) => s.viewportX);
   const viewportY = useUIStore((s) => s.viewportY);
   const zoom = useUIStore((s) => s.zoom);
+  const showOutline = useUIStore((s) => s.showOutline);
   const addElement = useDocumentStore((s) => s.addElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
 
@@ -168,7 +169,7 @@ export function Toolbar() {
   };
 
   const drawActive = isShapeToolActive(activeTool) || DRAW_TOOL_SET.has(activeTool);
-  const toolbarLeft = showLibrary ? 'left-[18.5rem]' : 'left-3';
+  const toolbarLeft = showOutline ? 'left-[20rem]' : showLibrary ? 'left-[18.5rem]' : 'left-3';
 
   return (
     <>

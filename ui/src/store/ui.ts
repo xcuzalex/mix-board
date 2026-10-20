@@ -42,8 +42,11 @@ interface UIStore {
   // UI panels
   showPropertyPanel: boolean;
   showGrid: boolean;
+  showOutline: boolean;
   setShowPropertyPanel: (show: boolean) => void;
   toggleGrid: () => void;
+  toggleOutline: () => void;
+  setShowOutline: (show: boolean) => void;
 
   // Interaction state
   isDrawing: boolean;
@@ -110,8 +113,11 @@ export const useUIStore = create<UIStore>()((set, get) => ({
 
   showPropertyPanel: false,
   showGrid: false,
+  showOutline: false,
   setShowPropertyPanel: (show) => set({ showPropertyPanel: show }),
   toggleGrid: () => set((state) => ({ showGrid: !state.showGrid })),
+  toggleOutline: () => set((state) => ({ showOutline: !state.showOutline })),
+  setShowOutline: (show) => set({ showOutline: show }),
 
   isDrawing: false,
   isDragging: false,
