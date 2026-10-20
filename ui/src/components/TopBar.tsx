@@ -214,14 +214,14 @@ export function TopBar() {
   return (
     <div className="absolute inset-x-0 top-0 z-30 h-11 select-none">
       <div
-        className="absolute inset-0 border-b border-slate-200 bg-white"
+        className="absolute inset-0 border-b border-slate-200 bg-white dark:border-white/10 dark:bg-[#1d1d22]"
       />
 
       <div className="pointer-events-none relative z-10 flex h-full items-center px-4">
         <div className="flex-1" />
 
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-          <div className="rounded-full border border-slate-200/80 bg-white/84 px-3 py-1 text-xs font-medium text-slate-500 shadow-sm">
+          <div className="rounded-full border border-slate-200/80 bg-white/84 px-3 py-1 text-xs font-medium text-slate-500 shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-slate-300">
             {fileName}
             {isDirty ? ' *' : ''}
           </div>

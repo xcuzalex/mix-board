@@ -19,13 +19,14 @@ export const PRESET_COLORS = [
   'transparent',
 ];
 
+// Excalidraw-inspired palette: light, modern, violet accent.
 export const THEME = {
-  primary: '#3370FF',
+  primary: '#6965db',
   background: '#FFFFFF',
   surface: '#F5F6F7',
   border: '#E0E0E0',
   textPrimary: '#1B1B1F',
   textSecondary: '#646A73',
-  selected: '#3370FF',
+  selected: '#6965db',
   hover: '#EEF0F5',
 };

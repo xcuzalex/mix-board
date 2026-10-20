@@ -70,7 +70,7 @@ export function ContextMenu({
   return (
     <div
       ref={ref}
-      className="fixed bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50 min-w-[180px]"
+      className="fixed bg-white dark:bg-[#23232a] rounded-lg shadow-xl border border-gray-200 dark:border-white/10 py-1 z-50 min-w-[180px]"
       style={{ left: state.x, top: state.y }}
     >
       {hasSelection && (
@@ -119,18 +119,18 @@ function MenuItem({
     <button
       className={`w-full flex items-center justify-between px-3 py-1.5 text-xs ${
         disabled
-          ? 'text-gray-300 cursor-not-allowed'
-          : 'text-gray-700 hover:bg-gray-50'
+          ? 'text-gray-300 dark:text-slate-600 cursor-not-allowed'
+          : 'text-gray-700 hover:bg-gray-50 dark:text-slate-200 dark:hover:bg-white/10'
       }`}
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
     >
       <span>{label}</span>
-      {shortcut && <span className="text-gray-400 ml-4">{shortcut}</span>}
+      {shortcut && <span className="text-gray-400 dark:text-slate-500 ml-4">{shortcut}</span>}
     </button>
   );
 }
 
 function Divider() {
-  return <div className="h-px bg-gray-100 my-1" />;
+  return <div className="h-px bg-gray-100 dark:bg-white/10 my-1" />;
 }

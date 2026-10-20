@@ -17,6 +17,15 @@ import { ContextMenu, type ContextMenuState } from '../components/ContextMenu';
 import { loadImageToCache } from './renderer';
 import { generateId } from '../utils/id';
 import {
+  findMindmapNode,
+  visitMindmapNodes,
+  updateMindmapNodeText,
+  moveMindmapNode,
+} from './mindmap-ops';
+import { useCanvasShortcuts } from './useCanvasShortcuts';
+import { getEditableDraft, computeEditingPosition } from './text-editing';
+import { canvasTheme, isDefaultBackground, setCanvasTheme } from './canvas-theme';
+import {
   createSceneIndex,
   findBindableElementWithStickyPreference,
   findNearestConnectionAnchor,
@@ -28,9 +37,7 @@ import {
   type ConnectionAnchorDescriptor,
   type SceneIndex,
 } from './linear';
-import { getElementShapeVariant } from './shape-utils';
 import type { Element, ImageElement, LinearElement, MindmapElement, MindmapNode, StickyNoteElement } from '../types/element';
-import { STICKY_NOTE_COLORS } from '../utils/color';
 import { registerPendingCanvasInteractionFlush } from '../utils/canvas-interaction-flush';
 import type { SnapGuide } from '../utils/math';
 import { exportCurrentBoardAsImage, saveCurrentDocument } from '../utils/document-io';
@@ -40,24 +47,6 @@ const interactionState = createInteractionState();
 
 // Module-level clipboard
 let clipboard: Element[] = [];
-
-const EDIT_PLACEHOLDERS = new Set(['输入文本', '中心主题', '新主题', '分区', '框架']);
-
-function getEditableDraft(text: string) {
-  const content = text.trim();
-  if (!content) return '';
-  return EDIT_PLACEHOLDERS.has(content) || /^分支\s+\d+$/.test(content) ? '' : text;
-}
-
-function getMindmapBranchTemplate(root: MindmapNode) {
-  const sample = root.children[0] ?? root.rightChildren?.[0] ?? root.leftChildren?.[0];
-  return {
-    nodeShape: sample?.nodeShape ?? 'rounded_rect',
-    backgroundColor: sample?.backgroundColor ?? '#E7F5EE',
-    textColor: sample?.textColor ?? '#234032',
-    fontSize: sample?.fontSize ?? 14,
-  };
-}
 
 type StickyEndpointState = {
   binding: LinearElement['startBinding'];
@@ -84,314 +73,6 @@ function dedupeAnchors(anchors: Array<ConnectionAnchorDescriptor | null>): Conne
     next.push(anchor);
   }
   return next;
-}
-
-function createMindmapTopic(
-  nodeType: 'branch' | 'leaf' = 'branch',
-  template?: Partial<Pick<MindmapNode, 'nodeShape' | 'backgroundColor' | 'textColor' | 'fontSize'>>,
-): MindmapNode {
-  return {
-    id: generateId(),
-    text: '新主题',
-    nodeType,
-    nodeShape: template?.nodeShape ?? 'rounded_rect',
-    backgroundColor: template?.backgroundColor ?? '#E7F5EE',
-    textColor: template?.textColor ?? '#234032',
-    fontSize: template?.fontSize ?? 14,
-    collapsed: false,
-    children: [],
-    leftChildren: [],
-    rightChildren: [],
-  };
-}
-
-function findMindmapNode(root: MindmapNode, nodeId: string): MindmapNode | null {
-  if (root.id === nodeId) return root;
-  const children = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];
-  for (const child of children) {
-    const result = findMindmapNode(child, nodeId);
-    if (result) return result;
-  }
-  return null;
-}
-
-function visitMindmapNodes(root: MindmapNode, visit: (node: MindmapNode) => void) {
-  visit(root);
-  const children = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];
-  for (const child of children) {
-    visitMindmapNodes(child, visit);
-  }
-}
-
-function updateMindmapNodeText(root: MindmapNode, nodeId: string, text: string): MindmapNode {
-  if (root.id === nodeId) {
-    return { ...root, text };
-  }
-
-  return {
-    ...root,
-    children: root.children.map((child) => updateMindmapNodeText(child, nodeId, text)),
-    leftChildren: (root.leftChildren || []).map((child) => updateMindmapNodeText(child, nodeId, text)),
-    rightChildren: (root.rightChildren || []).map((child) => updateMindmapNodeText(child, nodeId, text)),
-  };
-}
-
-function addMindmapChild(root: MindmapNode, parentId: string, node: MindmapNode): MindmapNode {
-  if (root.id === parentId) {
-    return {
-      ...root,
-      collapsed: false,
-      children: [...root.children, node],
-    };
-  }
-
-  return {
-    ...root,
-    children: root.children.map((child) => addMindmapChild(child, parentId, node)),
-    leftChildren: (root.leftChildren || []).map((child) => addMindmapChild(child, parentId, node)),
-    rightChildren: (root.rightChildren || []).map((child) => addMindmapChild(child, parentId, node)),
-  };
-}
-
-function addMindmapSibling(root: MindmapNode, targetId: string, node: MindmapNode): MindmapNode {
-  const insertInto = (nodes: MindmapNode[]): [MindmapNode[], boolean] => {
-    let inserted = false;
-    const nextNodes = nodes.flatMap((current) => {
-      if (current.id === targetId) {
-        inserted = true;
-        return [current, node];
-      }
-
-      const [nextChildren, insertedInChildren] = insertInto(current.children);
-      const [nextLeftChildren, insertedInLeftChildren] = insertInto(current.leftChildren || []);
-      const [nextRightChildren, insertedInRightChildren] = insertInto(current.rightChildren || []);
-
-      if (insertedInChildren || insertedInLeftChildren || insertedInRightChildren) {
-        inserted = true;
-        return [{
-          ...current,
-          children: nextChildren,
-          leftChildren: nextLeftChildren,
-          rightChildren: nextRightChildren,
-        }];
-      }
-
-      return [current];
-    });
-
-    return [nextNodes, inserted];
-  };
-
-  if (root.id === targetId) {
-    return {
-      ...root,
-      collapsed: false,
-      children: [...root.children, node],
-    };
-  }
-
-  const [children, insertedInChildren] = insertInto(root.children);
-  const [leftChildren, insertedInLeftChildren] = insertInto(root.leftChildren || []);
-  const [rightChildren, insertedInRightChildren] = insertInto(root.rightChildren || []);
-
-  if (insertedInChildren || insertedInLeftChildren || insertedInRightChildren) {
-    return {
-      ...root,
-      children,
-      leftChildren,
-      rightChildren,
-    };
-  }
-
-  return root;
-}
-
-function extractMindmapNode(root: MindmapNode, nodeId: string): { root: MindmapNode; extracted: MindmapNode | null } {
-  const extractFromList = (nodes: MindmapNode[]): { nodes: MindmapNode[]; extracted: MindmapNode | null } => {
-    for (let index = 0; index < nodes.length; index += 1) {
-      const node = nodes[index];
-      if (node.id === nodeId) {
-        return { nodes: [...nodes.slice(0, index), ...nodes.slice(index + 1)], extracted: node };
-      }
-
-      const nextChildren = extractFromList(node.children);
-      if (nextChildren.extracted) {
-        return {
-          nodes: [
-            ...nodes.slice(0, index),
-            { ...node, children: nextChildren.nodes },
-            ...nodes.slice(index + 1),
-          ],
-          extracted: nextChildren.extracted,
-        };
-      }
-
-      const nextLeftChildren = extractFromList(node.leftChildren || []);
-      if (nextLeftChildren.extracted) {
-        return {
-          nodes: [
-            ...nodes.slice(0, index),
-            { ...node, leftChildren: nextLeftChildren.nodes },
-            ...nodes.slice(index + 1),
-          ],
-          extracted: nextLeftChildren.extracted,
-        };
-      }
-
-      const nextRightChildren = extractFromList(node.rightChildren || []);
-      if (nextRightChildren.extracted) {
-        return {
-          nodes: [
-            ...nodes.slice(0, index),
-            { ...node, rightChildren: nextRightChildren.nodes },
-            ...nodes.slice(index + 1),
-          ],
-          extracted: nextRightChildren.extracted,
-        };
-      }
-    }
-
-    return { nodes, extracted: null };
-  };
-
-  if (root.id === nodeId) {
-    return { root, extracted: null };
-  }
-
-  const nextChildren = extractFromList(root.children);
-  if (nextChildren.extracted) {
-    return { root: { ...root, children: nextChildren.nodes }, extracted: nextChildren.extracted };
-  }
-
-  const nextLeftChildren = extractFromList(root.leftChildren || []);
-  if (nextLeftChildren.extracted) {
-    return { root: { ...root, leftChildren: nextLeftChildren.nodes }, extracted: nextLeftChildren.extracted };
-  }
-
-  const nextRightChildren = extractFromList(root.rightChildren || []);
-  if (nextRightChildren.extracted) {
-    return { root: { ...root, rightChildren: nextRightChildren.nodes }, extracted: nextRightChildren.extracted };
-  }
-
-  return { root, extracted: null };
-}
-
-function moveMindmapNode(root: MindmapNode, nodeId: string, targetParentId: string): MindmapNode {
-  if (root.id === nodeId || nodeId === targetParentId) return root;
-
-  const draggedNode = findMindmapNode(root, nodeId);
-  if (!draggedNode || findMindmapNode(draggedNode, targetParentId)) {
-    return root;
-  }
-
-  const { root: withoutNode, extracted } = extractMindmapNode(root, nodeId);
-  if (!extracted) return root;
-
-  return addMindmapChild(withoutNode, targetParentId, extracted);
-}
-
-function getShapeTextInsets(el: Element, zoom: number) {
-  const variant = getElementShapeVariant(el);
-  const width = el.width * zoom;
-  const height = el.height * zoom;
-
-  const inset = {
-    left: 10 * zoom,
-    right: 10 * zoom,
-    top: 8 * zoom,
-    bottom: 8 * zoom,
-  };
-
-  switch (variant) {
-    case 'ellipse':
-      inset.left = inset.right = Math.max(width * 0.2, 12 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.16, 8 * zoom);
-      break;
-    case 'diamond':
-      inset.left = inset.right = Math.max(width * 0.24, 12 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.2, 10 * zoom);
-      break;
-    case 'triangle':
-      inset.left = inset.right = Math.max(width * 0.18, 10 * zoom);
-      inset.top = Math.max(height * 0.22, 12 * zoom);
-      inset.bottom = Math.max(height * 0.12, 8 * zoom);
-      break;
-    case 'hexagon':
-    case 'parallelogram':
-    case 'manual_input':
-      inset.left = inset.right = Math.max(width * 0.16, 12 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.12, 8 * zoom);
-      break;
-    case 'octagon':
-    case 'trapezoid':
-    case 'display':
-    case 'weak_entity':
-      inset.left = inset.right = Math.max(width * 0.14, 12 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.14, 8 * zoom);
-      break;
-    case 'delay':
-      inset.left = Math.max(width * 0.12, 10 * zoom);
-      inset.right = Math.max(width * 0.24, 18 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.16, 10 * zoom);
-      break;
-    case 'star':
-    case 'cloud':
-    case 'actor':
-      inset.left = inset.right = Math.max(width * 0.18, 14 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.18, 12 * zoom);
-      break;
-    case 'speech_bubble':
-      inset.left = inset.right = Math.max(width * 0.12, 10 * zoom);
-      inset.top = Math.max(height * 0.12, 8 * zoom);
-      inset.bottom = Math.max(height * 0.22, 16 * zoom);
-      break;
-    case 'arrow_left':
-      inset.left = Math.max(width * 0.28, 22 * zoom);
-      inset.right = Math.max(width * 0.12, 10 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.16, 8 * zoom);
-      break;
-    case 'arrow_right':
-      inset.left = Math.max(width * 0.12, 10 * zoom);
-      inset.right = Math.max(width * 0.28, 22 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.16, 8 * zoom);
-      break;
-    case 'double_arrow':
-      inset.left = inset.right = Math.max(width * 0.24, 20 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.16, 8 * zoom);
-      break;
-    case 'plus':
-      inset.left = inset.right = Math.max(width * 0.18, 14 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.18, 14 * zoom);
-      break;
-    case 'document':
-    case 'multi_document':
-    case 'cylinder':
-    case 'package':
-    case 'component':
-    case 'class_box':
-    case 'predefined_process':
-    case 'internal_storage':
-      inset.left = inset.right = Math.max(width * 0.12, 10 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.14, 8 * zoom);
-      break;
-    case 'weak_relationship':
-      inset.left = inset.right = Math.max(width * 0.22, 14 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.2, 12 * zoom);
-      break;
-    case 'sync_bar':
-      inset.left = inset.right = Math.max(width * 0.08, 8 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.24, 12 * zoom);
-      break;
-    case 'start_state':
-    case 'end_state':
-      inset.left = inset.right = Math.max(width * 0.22, 14 * zoom);
-      inset.top = inset.bottom = Math.max(height * 0.22, 14 * zoom);
-      break;
-    default:
-      break;
-  }
-
-  return inset;
 }
 
 function areIdSetsEqual(left: Set<string>, right: Set<string>): boolean {
@@ -539,6 +220,7 @@ export function Canvas() {
   const setViewport = useUIStore((s) => s.setViewport);
   const showGrid = useUIStore((s) => s.showGrid);
   const cursorStyle = useUIStore((s) => s.cursorStyle);
+  const effectiveTheme = useUIStore((s) => s.effectiveTheme);
   const setCursorStyle = useUIStore((s) => s.setCursorStyle);
   cursorRef.current = cursorStyle;
   const freedrawColor = useUIStore((s) => s.freedrawColor);
@@ -609,9 +291,13 @@ export function Canvas() {
   }, [elements, invalidateOverlay, invalidateScene]);
 
   const renderScene = useCallback(() => {
+    // Default white page follows the theme; an explicit document background is kept.
+    const bgColor = isDefaultBackground(appState.viewBackgroundColor)
+      ? canvasTheme.background
+      : appState.viewBackgroundColor;
     sceneRendererRef.current?.renderSceneLayer(
       elements,
-      appState.viewBackgroundColor,
+      bgColor,
       showGrid,
       appState.gridSize,
       editingElement?.id ?? editingMindmapNode?.elementId ?? null,
@@ -626,7 +312,14 @@ export function Canvas() {
     showGrid,
     editingElement,
     editingMindmapNode,
+    effectiveTheme,
   ]);
+
+  // Sync canvas-surface colors to the theme and repaint when it changes (P0.D).
+  useEffect(() => {
+    setCanvasTheme(effectiveTheme);
+    invalidateScene();
+  }, [effectiveTheme, invalidateScene]);
 
   const renderOverlay = useCallback(() => {
     const preview = buildPreviewElements(elements, pendingElementUpdatesRef.current);
@@ -1981,251 +1674,20 @@ export function Canvas() {
     setContextMenu({ show: true, x: e.clientX, y: e.clientY });
   }, []);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // Don't handle shortcuts when focus is in an input / textarea / contenteditable
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
-        return;
-      }
-
-      // Don't intercept shortcuts when the target is inside an overlay panel (e.g. AI chat)
-      if ((e.target as HTMLElement)?.closest?.('[data-overlay-panel]')) {
-        return;
-      }
-      // Also skip if text is selected inside an overlay panel (copy support)
-      const sel = window.getSelection();
-      if (sel && sel.toString() && sel.anchorNode) {
-        const anchor = sel.anchorNode instanceof HTMLElement
-          ? sel.anchorNode
-          : sel.anchorNode.parentElement;
-        if (anchor?.closest('[data-overlay-panel]')) {
-          return;
-        }
-      }
-
-      // Don't handle shortcuts when editing text
-      if (editingElement || editingMindmapNode) {
-        if (e.key === 'Escape') {
-          finishEditing();
-          e.preventDefault();
-        }
-        return;
-      }
-
-      // Space for pan
-      if (e.code === 'Space' && !e.repeat) {
-        spaceRef.current = true;
-        setCursorStyle('grab');
-        e.preventDefault();
-        return;
-      }
-
-      // Escape
-      if (e.key === 'Escape') {
-        setSelectedIds([]);
-        setSelectedMindmapNode(null);
-        setContextMenu({ show: false, x: 0, y: 0 });
-        return;
-      }
-
-      // Delete
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
-        handleDelete();
-        return;
-      }
-
-      // Tab: create adjacent sticky note (when a sticky note is selected)
-      if (e.key === 'Tab' && selectedIds.length === 1) {
-        const sel = sceneIndexRef.current.byId.get(selectedIds[0]);
-        if (sel && sel.type === 'sticky_note') {
-          e.preventDefault();
-          commitPendingElementUpdates();
-          const newEl = createElementForTool(
-            'sticky_note',
-            sel.x + sel.width + 20,
-            sel.y,
-          );
-          if (newEl) {
-            newEl.width = sel.width;
-            newEl.height = sel.height;
-            (newEl as any).noteColor = (sel as any).noteColor;
-            (newEl as any).fontSize = (sel as any).fontSize;
-            pushHistory();
-            addElement(newEl);
-            setSelectedIds([newEl.id]);
-            setSelectedMindmapNode(null);
-            startTextEditing(newEl);
-          }
-          return;
-        }
-
-        // Tab on mindmap: add child node
-        if (sel && sel.type === 'mindmap') {
-          e.preventDefault();
-          commitPendingElementUpdates();
-          pushHistory();
-          const targetNodeId = selectedMindmapNode?.elementId === sel.id
-            ? selectedMindmapNode.nodeId
-            : sel.rootNode.id;
-          const newNode = createMindmapTopic('leaf', getMindmapBranchTemplate(sel.rootNode));
-          updateElement(sel.id, {
-            rootNode: addMindmapChild(sel.rootNode, targetNodeId, newNode),
-          } as any);
-          setSelectedMindmapNode({ elementId: sel.id, nodeId: newNode.id });
-          return;
-        }
-      }
-
-      // Enter on mindmap: add sibling node
-      if (e.key === 'Enter' && selectedIds.length === 1 && !e.metaKey && !e.ctrlKey) {
-        const sel = sceneIndexRef.current.byId.get(selectedIds[0]);
-        if (sel && sel.type === 'mindmap') {
-          e.preventDefault();
-          commitPendingElementUpdates();
-          pushHistory();
-          const targetNodeId = selectedMindmapNode?.elementId === sel.id
-            ? selectedMindmapNode.nodeId
-            : sel.rootNode.id;
-          const newNode = createMindmapTopic('branch', getMindmapBranchTemplate(sel.rootNode));
-          updateElement(sel.id, {
-            rootNode: addMindmapSibling(sel.rootNode, targetNodeId, newNode),
-          } as any);
-          setSelectedMindmapNode({ elementId: sel.id, nodeId: newNode.id });
-          return;
-        }
-      }
-
-      // Ctrl/Cmd shortcuts
-      if (e.metaKey || e.ctrlKey) {
-        switch (e.key) {
-          case 'z':
-            commitPendingElementUpdates();
-            if (e.shiftKey) {
-              useDocumentStore.getState().redo();
-            } else {
-              useDocumentStore.getState().undo();
-            }
-            e.preventDefault();
-            return;
-          case 'a':
-            setSelectedIds(elements.map(el => el.id));
-            setSelectedMindmapNode(null);
-            e.preventDefault();
-            return;
-          case 's':
-            handleSave();
-            e.preventDefault();
-            return;
-          case 'c':
-            handleCopy();
-            e.preventDefault();
-            return;
-          case 'v':
-            handlePaste();
-            e.preventDefault();
-            return;
-          case 'd':
-            handleDuplicate();
-            e.preventDefault();
-            return;
-          case 'g':
-            if (selectedIds.length > 1) {
-              commitPendingElementUpdates();
-              if (e.shiftKey) {
-                pushHistory();
-                ungroupElements(selectedIds);
-              } else {
-                pushHistory();
-                groupElements(selectedIds);
-              }
-            }
-            e.preventDefault();
-            return;
-          case 'e':
-            if (e.shiftKey) {
-              handleExportPNG();
-              e.preventDefault();
-            }
-            return;
-          case ']':
-            if (selectedIds.length > 0) {
-              commitPendingElementUpdates();
-              pushHistory();
-              if (e.shiftKey) {
-                bringToFront(selectedIds);
-              } else {
-                bringForward(selectedIds);
-              }
-            }
-            e.preventDefault();
-            return;
-          case '[':
-            if (selectedIds.length > 0) {
-              commitPendingElementUpdates();
-              pushHistory();
-              if (e.shiftKey) {
-                sendToBack(selectedIds);
-              } else {
-                sendBackward(selectedIds);
-              }
-            }
-            e.preventDefault();
-            return;
-        }
-      }
-
-      // Shift tool shortcuts
-      if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        switch (e.key) {
-          case 'P': setActiveTool('highlighter'); e.preventDefault(); return;
-          case 'S': setActiveTool('section'); e.preventDefault(); return;
-          case 'G': useUIStore.getState().toggleGrid(); e.preventDefault(); return;
-        }
-      }
-
-      // Tool shortcuts (no modifiers)
-      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-        switch (e.key.toLowerCase()) {
-          case 'v': setActiveTool('select'); break;
-          case 'h': setActiveTool('hand'); break;
-          case 'r': setActiveTool('rectangle'); setActiveShapeVariant('round_rectangle'); break;
-          case 'o': setActiveTool('ellipse'); setActiveShapeVariant('ellipse'); break;
-          case 'd': setActiveTool('diamond'); setActiveShapeVariant('diamond'); break;
-          case 'l': setActiveTool('line'); break;
-          case 'a': setActiveTool('arrow'); break;
-          case 't': setActiveTool('text'); break;
-          case 'n': setActiveTool('sticky_note'); break;
-          case 'p': setActiveTool('freedraw'); break;
-          case 'i': setActiveTool('image'); break;
-          case 'm': setActiveTool('mindmap'); break;
-          case 'f': setActiveTool('frame'); break;
-        }
-      }
-    };
-
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        spaceRef.current = false;
-        setCursorStyle('default');
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
-  }, [
+  // Keyboard shortcuts (extracted to ./useCanvasShortcuts, P0.C)
+  useCanvasShortcuts({
     selectedIds,
     elements,
     editingElement,
     editingMindmapNode,
+    selectedMindmapNode,
+    spaceRef,
+    sceneIndexRef,
     finishEditing,
     pushHistory,
     setSelectedIds,
+    setSelectedMindmapNode,
+    setContextMenu,
     setActiveTool,
     setActiveShapeVariant,
     setCursorStyle,
@@ -2242,118 +1704,21 @@ export function Canvas() {
     sendBackward,
     groupElements,
     ungroupElements,
-    selectedMindmapNode,
-  ]);
+    addElement,
+    updateElement,
+    startTextEditing,
+  });
 
   // --- Text editing overlay position ---
-  const getEditingPosition = () => {
-    if (editingElement) {
-      // Section/frame: textarea positioned above the element (title area)
-      if (editingElement.type === 'section' || editingElement.type === 'frame') {
-        const titleH = 20 * zoom;
-        const screen = viewport.canvasToScreen(editingElement.x, editingElement.y - 20);
-        return {
-          left: screen.x,
-          top: screen.y,
-          width: Math.max(editingElement.width * zoom, 100),
-          height: titleH,
-          fontSize: 12 * zoom,
-          fontFamily: 'Inter, system-ui, sans-serif',
-          color: '#8B8FA3',
-          padding: '2px 4px',
-          backgroundColor: 'rgba(255, 255, 255, 0.96)',
-          borderRadius: 6 * zoom,
-        };
-      }
-      // Shapes: textarea centered inside the shape
-      const isShape = ['rectangle', 'ellipse', 'diamond', 'triangle'].includes(editingElement.type);
-      if (isShape) {
-        const shapeScreen = viewport.canvasToScreen(editingElement.x, editingElement.y);
-        const fs = ((editingElement as any).fontSize || 16) * zoom;
-        const insets = getShapeTextInsets(editingElement, zoom);
-        const width = Math.max(editingElement.width * zoom - insets.left - insets.right, fs * 1.6);
-        const height = Math.max(editingElement.height * zoom - insets.top - insets.bottom, fs * 1.35);
-        const paddingTop = Math.max(2, (height - fs * 1.3) / 2);
-        return {
-          left: shapeScreen.x + insets.left,
-          top: shapeScreen.y + insets.top,
-          width,
-          height,
-          fontSize: fs,
-          fontFamily: (editingElement as any).fontFamily || 'Inter, system-ui, sans-serif',
-          color: editingElement.strokeColor || '#1B1B1F',
-          padding: `${paddingTop}px 2px 2px`,
-          textAlign: 'center' as const,
-          backgroundColor: 'transparent',
-          borderRadius: 0,
-          chrome: 'plain' as const,
-        };
-      }
-      const screen = viewport.canvasToScreen(editingElement.x, editingElement.y);
-      return {
-        left: screen.x,
-        top: screen.y,
-        width: Math.max(editingElement.width * zoom, 100),
-        height: Math.max(editingElement.height * zoom, 30),
-        fontSize: ((editingElement as any).fontSize || 20) * zoom,
-        fontFamily: (editingElement as any).fontFamily || 'Inter, system-ui, sans-serif',
-        color: editingElement.type === 'sticky_note' ? '#1B1B1F' : editingElement.strokeColor,
-        padding: editingElement.type === 'sticky_note' ? `${12 * zoom}px` : '2px',
-        backgroundColor: editingElement.type === 'sticky_note'
-          ? STICKY_NOTE_COLORS[(editingElement as any).noteColor] || editingElement.backgroundColor
-          : (editingElement.backgroundColor === 'transparent' ? 'rgba(255, 255, 255, 0.96)' : editingElement.backgroundColor),
-        borderRadius: editingElement.type === 'sticky_note' ? 8 * zoom : 4 * zoom,
-        chrome: 'panel' as const,
-      };
-    }
-
-    if (editingMindmapNode) {
-      const element = sceneIndexRef.current.byId.get(editingMindmapNode.elementId);
-      if (element?.type === 'mindmap') {
-        const node = findMindmapNode(element.rootNode, editingMindmapNode.nodeId);
-        const rect = sceneRendererRef.current?.getMindmapNodeRect(element, editingMindmapNode.nodeId);
-        if (node && rect) {
-          const screen = viewport.canvasToScreen(rect.x, rect.y);
-          const insetX = node.nodeShape === 'pill' ? 12 * zoom : 8 * zoom;
-          const insetY = node.nodeShape === 'text' ? 0 : 4 * zoom;
-          const nodeW = Math.max(rect.w * zoom - insetX * 2, node.fontSize * zoom * 1.6);
-          const nodeH = Math.max(rect.h * zoom - insetY * 2, node.fontSize * zoom * 1.35);
-          const lineH = node.fontSize * zoom * 1.3;
-          const paddingTop = Math.max(2, (nodeH - lineH) / 2);
-          return {
-            left: screen.x + insetX,
-            top: screen.y + insetY,
-            width: nodeW,
-            height: nodeH,
-            fontSize: node.fontSize * zoom,
-            fontFamily: 'Inter, system-ui, sans-serif',
-            color: node.textColor,
-            padding: `${paddingTop}px 2px 2px`,
-            textAlign: 'center' as const,
-            backgroundColor: node.nodeShape === 'text' ? 'rgba(255, 255, 255, 0.96)' : 'transparent',
-            borderRadius: node.nodeShape === 'text' ? 10 * zoom : 0,
-            chrome: node.nodeShape === 'text' ? 'panel' as const : 'plain' as const,
-          };
-        }
-      }
-    }
-
-    return {
-      left: 0,
-      top: 0,
-      width: 0,
-      height: 0,
-      fontSize: 20,
-      fontFamily: 'Inter, system-ui, sans-serif',
-      color: '#1B1B1F',
-      padding: '2px',
-      backgroundColor: 'rgba(255, 255, 255, 0.96)',
-      borderRadius: 4,
-      chrome: 'panel' as const,
-    };
-  };
-
-  const editPos = getEditingPosition();
+  // Text editor overlay position/style — computed by ./text-editing (P0.C).
+  const editPos = computeEditingPosition({
+    editingElement,
+    editingMindmapNode,
+    zoom,
+    viewport,
+    sceneIndex: sceneIndexRef.current,
+    renderer: sceneRendererRef.current,
+  });
 
   return (
     <div className="absolute inset-0">

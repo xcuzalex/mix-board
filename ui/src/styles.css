@@ -1,4 +1,17 @@
 @import 'tailwindcss';
+/* Hand-drawn canvas font (画风增量2). CJK falls back to the system font. */
+@import url('https://fonts.googleapis.com/css2?family=Kalam:wght@300;400;700&display=swap');
+
+/* Attribute-based dark mode: `dark:` utilities apply when <html data-theme="dark"> (P0.D). */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+}
 
 html, body, #root {
   width: 100%;
@@ -7,4 +20,11 @@ html, body, #root {
   padding: 0;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'SF Pro', 'PingFang SC', system-ui, sans-serif;
+  background: #ffffff;
+}
+
+[data-theme='dark'] html,
+[data-theme='dark'] body,
+[data-theme='dark'] #root {
+  background: #17171b;
 }

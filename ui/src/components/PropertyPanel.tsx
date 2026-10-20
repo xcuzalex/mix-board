@@ -115,13 +115,13 @@ export function PropertyPanel() {
   if (selectedIds.length === 0) {
     if (activeTool === 'freedraw') {
       return (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-10 flex flex-col gap-3">
-          <div className="text-xs font-medium text-gray-500 tracking-wide">画笔</div>
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3">
+          <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">画笔</div>
           <Section label="颜色">
             <div className="flex flex-wrap gap-1.5">
               {FREEDRAW_COLORS.map((c) => (
                 <button key={c} onClick={() => setFreedrawColor(c)}
-                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${freedrawColor === c ? 'border-blue-500 scale-110' : 'border-gray-200'}`}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${freedrawColor === c ? 'border-blue-500 scale-110' : 'border-gray-200 dark:border-white/10'}`}
                   style={{ backgroundColor: c }} />
               ))}
             </div>
@@ -131,13 +131,13 @@ export function PropertyPanel() {
     }
     if (activeTool === 'highlighter') {
       return (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-10 flex flex-col gap-3">
-          <div className="text-xs font-medium text-gray-500 tracking-wide">荧光笔</div>
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3">
+          <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">荧光笔</div>
           <Section label="颜色">
             <div className="flex flex-wrap gap-1.5">
               {HIGHLIGHTER_COLORS.map(({ label, display }) => (
                 <button key={label} onClick={() => setHighlighterColor(label)}
-                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${highlighterColor === label ? 'border-blue-500 scale-110' : 'border-gray-200'}`}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${highlighterColor === label ? 'border-blue-500 scale-110' : 'border-gray-200 dark:border-white/10'}`}
                   style={{ backgroundColor: display }} />
               ))}
             </div>
@@ -210,8 +210,8 @@ export function PropertyPanel() {
   };
 
   return (
-    <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-10 flex flex-col gap-3 max-h-[80vh] overflow-y-auto">
-      <div className="text-xs font-medium text-gray-500 tracking-wide">属性</div>
+    <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3 max-h-[80vh] overflow-y-auto">
+      <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">属性</div>
 
       {/* Highlighter color */}
       {isHighlighter && (
@@ -249,7 +249,7 @@ export function PropertyPanel() {
                 <button
                   key={color}
                   className={`w-6 h-6 rounded-md border-2 ${
-                    (first as any).noteColor === color ? 'border-blue-500' : 'border-gray-200'
+                    (first as any).noteColor === color ? 'border-blue-500' : 'border-gray-200 dark:border-white/10'
                   }`}
                   style={{ backgroundColor: STICKY_NOTE_COLORS[color] }}
                   onClick={() => update({ noteColor: color } as any)}
@@ -285,7 +285,7 @@ export function PropertyPanel() {
             onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
-          <span className="text-xs text-gray-500">{first.strokeWidth}px</span>
+          <span className="text-xs text-gray-500 dark:text-slate-400">{first.strokeWidth}px</span>
         </Section>
       )}
 
@@ -308,7 +308,7 @@ export function PropertyPanel() {
             onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
-          <span className="text-xs text-gray-500">{first.strokeWidth}px</span>
+          <span className="text-xs text-gray-500 dark:text-slate-400">{first.strokeWidth}px</span>
         </Section>
       )}
 
@@ -320,7 +320,7 @@ export function PropertyPanel() {
               <button
                 key={style}
                 className={`px-2 py-1 text-xs rounded ${
-                  first.strokeStyle === style ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                  first.strokeStyle === style ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                 }`}
                 onClick={() => update({ strokeStyle: style } as any)}
               >
@@ -339,7 +339,7 @@ export function PropertyPanel() {
                 <button
                   key={value}
                   className={`px-2 py-1 text-xs rounded ${
-                    mindmap.layout === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                    mindmap.layout === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                   }`}
                   onClick={() => update({ layout: value } as any)}
                 >
@@ -355,7 +355,7 @@ export function PropertyPanel() {
                 <button
                   key={value}
                   className={`px-2 py-1 text-xs rounded ${
-                    mindmap.branchStyle === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                    mindmap.branchStyle === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                   }`}
                   onClick={() => update({ branchStyle: value } as any)}
                 >
@@ -394,7 +394,7 @@ export function PropertyPanel() {
               onBlur={endHistoryGesture}
               className="w-full h-1.5 accent-blue-500"
             />
-            <span className="text-xs text-gray-500">{mindmap.lineStyle.width}px</span>
+            <span className="text-xs text-gray-500 dark:text-slate-400">{mindmap.lineStyle.width}px</span>
           </Section>
 
           <Section label="连线样式">
@@ -403,7 +403,7 @@ export function PropertyPanel() {
                 <button
                   key={style}
                   className={`px-2 py-1 text-xs rounded ${
-                    mindmap.lineStyle.style === style ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                    mindmap.lineStyle.style === style ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                   }`}
                   onClick={() => update({
                     lineStyle: { ...mindmap.lineStyle, style },
@@ -418,7 +418,7 @@ export function PropertyPanel() {
           <Section label="中心节点颜色">
             <div className="space-y-2">
               <div>
-                <div className="mb-1 text-[10px] text-gray-400">背景</div>
+                <div className="mb-1 text-[10px] text-gray-400 dark:text-slate-500">背景</div>
                 <ColorGrid
                   colors={PRESET_COLORS.filter(c => c !== 'transparent')}
                   selected={mindmap.rootNode.backgroundColor}
@@ -426,7 +426,7 @@ export function PropertyPanel() {
                 />
               </div>
               <div>
-                <div className="mb-1 text-[10px] text-gray-400">文字</div>
+                <div className="mb-1 text-[10px] text-gray-400 dark:text-slate-500">文字</div>
                 <ColorGrid
                   colors={PRESET_COLORS.filter(c => c !== 'transparent')}
                   selected={mindmap.rootNode.textColor}
@@ -439,7 +439,7 @@ export function PropertyPanel() {
           <Section label="分支节点颜色">
             <div className="space-y-2">
               <div>
-                <div className="mb-1 text-[10px] text-gray-400">背景</div>
+                <div className="mb-1 text-[10px] text-gray-400 dark:text-slate-500">背景</div>
                 <ColorGrid
                   colors={PRESET_COLORS.filter(c => c !== 'transparent')}
                   selected={branchSample?.backgroundColor ?? '#E7F5EE'}
@@ -447,7 +447,7 @@ export function PropertyPanel() {
                 />
               </div>
               <div>
-                <div className="mb-1 text-[10px] text-gray-400">文字</div>
+                <div className="mb-1 text-[10px] text-gray-400 dark:text-slate-500">文字</div>
                 <ColorGrid
                   colors={PRESET_COLORS.filter(c => c !== 'transparent')}
                   selected={branchSample?.textColor ?? '#234032'}
@@ -476,7 +476,7 @@ export function PropertyPanel() {
           onBlur={endHistoryGesture}
           className="w-full h-1.5 accent-blue-500"
         />
-        <span className="text-xs text-gray-500">{first.opacity}%</span>
+        <span className="text-xs text-gray-500 dark:text-slate-400">{first.opacity}%</span>
       </Section>
 
       {/* Font Size */}
@@ -489,7 +489,7 @@ export function PropertyPanel() {
             value={(first as any).fontSize}
             onChange={(e) => updateInHistoryGesture({ fontSize: Number(e.target.value) } as any)}
             onBlur={endHistoryGesture}
-            className="w-full px-2 py-1 text-xs border border-gray-200 rounded"
+            className="w-full px-2 py-1 text-xs border border-gray-200 dark:border-white/10 rounded"
           />
         </Section>
       )}
@@ -512,7 +512,7 @@ export function PropertyPanel() {
             onBlur={endHistoryGesture}
             className="w-full h-1.5 accent-blue-500"
           />
-          <span className="text-xs text-gray-500">{(first as any).roundness ?? 0}px</span>
+          <span className="text-xs text-gray-500 dark:text-slate-400">{(first as any).roundness ?? 0}px</span>
         </Section>
       )}
 
@@ -524,7 +524,7 @@ export function PropertyPanel() {
               <button
                 key={align}
                 className={`px-2 py-1 text-xs rounded ${
-                  (first as any).textAlign === align ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                  (first as any).textAlign === align ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                 }`}
                 onClick={() => update({ textAlign: align } as any)}
               >
@@ -541,7 +541,7 @@ export function PropertyPanel() {
           <select
             value={(first as any).fontFamily || 'Inter, system-ui, sans-serif'}
             onChange={(e) => update({ fontFamily: e.target.value } as any)}
-            className="w-full px-2 py-1 text-xs border border-gray-200 rounded"
+            className="w-full px-2 py-1 text-xs border border-gray-200 dark:border-white/10 rounded"
           >
             <option value="Inter, system-ui, sans-serif">无衬线</option>
             <option value="Georgia, serif">衬线</option>
@@ -565,7 +565,7 @@ export function PropertyPanel() {
               <button
                 key={value}
                 className={`px-2 py-1 text-xs rounded ${
-                  (first as any).connectorShape === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+                  (first as any).connectorShape === value ? 'bg-blue-50 text-blue-600' : 'text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10'
                 }`}
                 onClick={() => update({ connectorShape: value } as any)}
               >
@@ -583,7 +583,7 @@ export function PropertyPanel() {
             <select
               value={(first as any).startArrowType || 'none'}
               onChange={(e) => update({ startArrowType: e.target.value as ArrowType } as any)}
-              className="w-full px-2 py-1 text-xs border border-gray-200 rounded"
+              className="w-full px-2 py-1 text-xs border border-gray-200 dark:border-white/10 rounded"
             >
               {ARROW_TYPE_OPTIONS.map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
@@ -594,7 +594,7 @@ export function PropertyPanel() {
             <select
               value={(first as any).endArrowType || 'none'}
               onChange={(e) => update({ endArrowType: e.target.value as ArrowType } as any)}
-              className="w-full px-2 py-1 text-xs border border-gray-200 rounded"
+              className="w-full px-2 py-1 text-xs border border-gray-200 dark:border-white/10 rounded"
             >
               {ARROW_TYPE_OPTIONS.map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
@@ -640,7 +640,7 @@ export function PropertyPanel() {
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs text-gray-400">{label}</span>
+      <span className="text-xs text-gray-400 dark:text-slate-500">{label}</span>
       {children}
     </div>
   );
@@ -661,7 +661,7 @@ function ColorGrid({
         <button
           key={color}
           className={`w-5 h-5 rounded border-2 ${
-            selected === color ? 'border-blue-500' : 'border-gray-200'
+            selected === color ? 'border-blue-500' : 'border-gray-200 dark:border-white/10'
           }`}
           style={{
             backgroundColor: color === 'transparent' ? '#fff' : color,
@@ -682,7 +682,7 @@ function ColorGrid({
 function AlignBtn({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
   return (
     <button
-      className="px-1 py-1 text-[10px] rounded text-gray-600 hover:bg-gray-100 border border-gray-200"
+      className="px-1 py-1 text-[10px] rounded text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10 border border-gray-200 dark:border-white/10"
       title={title}
       onClick={onClick}
     >
@@ -702,12 +702,12 @@ function LabeledInput({
 }) {
   return (
     <div className="flex items-center gap-1">
-      <span className="text-[10px] text-gray-400 w-3">{label}</span>
+      <span className="text-[10px] text-gray-400 dark:text-slate-500 w-3">{label}</span>
       <input
         type="number"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full px-1 py-0.5 text-xs border border-gray-200 rounded"
+        className="w-full px-1 py-0.5 text-xs border border-gray-200 dark:border-white/10 rounded"
       />
     </div>
   );

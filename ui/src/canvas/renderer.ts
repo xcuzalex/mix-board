@@ -1,11 +1,11 @@
-import type { Element, ArrowType, LinearElement, MindmapElement, MindmapNode, ImageElement } from '../types/element';
+import type { Element, LinearElement, MindmapElement, MindmapNode, ImageElement } from '../types/element';
 import { getStroke } from 'perfect-freehand';
+import rough from 'roughjs';
+import type { RoughCanvas } from 'roughjs/bin/canvas';
 import { STICKY_NOTE_COLORS, THEME } from '../utils/color';
 import { Viewport } from './viewport';
 import {
   createSceneIndex,
-  getAnchorNormalFromFocus,
-  getConnectionAnchorFromBinding,
   getConnectionPoints as getElementConnectionPoints,
   getLinearAbsolutePoints,
   getLinearBounds,
@@ -13,7 +13,32 @@ import {
   type ConnectionAnchorDescriptor,
   type SceneIndex,
 } from './linear';
-import { createShapePath, getElementShapeVariant, renderShapeDecoration } from './shape-utils';
+import { createShapePath } from './shape-utils';
+import { applyStrokeStyle as applyStrokeStyleShared } from './render/stroke';
+import {
+  drawRectangle,
+  drawEllipse,
+  drawDiamond,
+  drawTriangle,
+  type GetShapePath,
+} from './render/shapes';
+import { drawLinear } from './render/linear';
+import {
+  type Rect,
+  getMindmapLayoutSignature,
+  layoutMindmapNodes,
+} from './render/mindmap-layout';
+import {
+  drawGrid,
+  drawSelectionRect,
+  drawSnapGuides,
+  drawLassoHighlight,
+} from './render/overlay';
+import {
+  type MindmapDrawDeps,
+  drawMindmap,
+  renderMindmapDragPreview as drawMindmapDragPreview,
+} from './render/mindmap';
 import type { SnapGuide } from '../utils/math';
 
 // Image cache for rendering
@@ -73,8 +98,6 @@ export interface OverlayRenderOptions {
   lassoSelectedIds?: string[];
 }
 
-type Rect = { x: number; y: number; w: number; h: number };
-
 type MindmapLayoutCacheEntry = {
   signature: string;
   x: number;
@@ -131,10 +154,12 @@ export class Renderer {
   private lastSelectedCount = 0;
   private selectionAnimStartTime = 0;
   private sceneIndexCache: { index: SceneIndex; elements: Element[] } | null = null;
+  private rough: RoughCanvas;
 
   constructor(ctx: CanvasRenderingContext2D, viewport: Viewport) {
     this.ctx = ctx;
     this.viewport = viewport;
+    this.rough = rough.canvas(ctx.canvas);
     installFontLoadInvalidation();
     this.refreshTextLayoutCachesIfNeeded();
   }
@@ -217,27 +242,6 @@ export class Renderer {
     this.textLayoutCacheGeneration = textLayoutCacheGeneration;
   }
 
-  private getMindmapLayoutSignature(el: MindmapElement): string {
-    const visit = (node: MindmapNode): string => {
-      const children = node.children.map(visit).join(',');
-      const leftChildren = (node.leftChildren || []).map(visit).join(',');
-      const rightChildren = (node.rightChildren || []).map(visit).join(',');
-      return [
-        node.id,
-        node.text,
-        node.fontSize,
-        node.nodeShape,
-        node.nodeType,
-        node.collapsed ? 1 : 0,
-        `[${children}]`,
-        `[${leftChildren}]`,
-        `[${rightChildren}]`,
-      ].join('|');
-    };
-
-    return [el.layout, visit(el.rootNode)].join('::');
-  }
-
   private shiftLayoutMap(layout: Map<string, Rect>, dx: number, dy: number): Map<string, Rect> {
     return new Map(Array.from(layout.entries(), ([nodeId, rect]) => [
       nodeId,
@@ -247,7 +251,7 @@ export class Renderer {
 
   private getMindmapLayout(el: MindmapElement): Map<string, Rect> {
     this.refreshTextLayoutCachesIfNeeded();
-    const signature = this.getMindmapLayoutSignature(el);
+    const signature = getMindmapLayoutSignature(el);
     const cached = this.mindmapLayoutCache.get(el.id);
     if (cached && cached.signature === signature) {
       if (cached.x !== el.x || cached.y !== el.y) {
@@ -259,7 +263,7 @@ export class Renderer {
       return cached.layout;
     }
 
-    const layout = this.layoutMindmapNodes(el);
+    const layout = layoutMindmapNodes(el, this.measureMindmapNode);
     this.mindmapLayoutCache.set(el.id, { signature, x: el.x, y: el.y, layout });
     this.trimCache(this.mindmapLayoutCache, 100);
     return layout;
@@ -304,6 +308,13 @@ export class Renderer {
     if (minX === Infinity) return { x: 0, y: 0, width: 0, height: 0 };
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
+
+  /** Bound once so extracted shape renderers can reuse the instance path cache without per-call closures. */
+  private getShapePath: GetShapePath = (variant, width, height, roundness) =>
+    this.getCachedShapePath(variant, width, height, roundness);
+
+  /** Bound node-measure (ctx.measureText + cache) injected into the extracted mindmap layout engine. */
+  private measureMindmapNode = (node: MindmapNode) => this.getMindmapNodeMeasure(node);
 
   private getCachedShapePath(variant: string, width: number, height: number, roundness: number): Path2D {
     const key = `${variant}:${Math.round(width)}:${Math.round(height)}:${roundness}`;
@@ -655,13 +666,13 @@ export class Renderer {
         if (isActive || isHovered) {
           ctx.beginPath();
           ctx.arc(px, py, (isActive ? 10 : 8) / this.viewport.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = isActive ? 'rgba(51, 112, 255, 0.22)' : 'rgba(51, 112, 255, 0.14)';
+          ctx.fillStyle = isActive ? 'rgba(105, 101, 219, 0.22)' : 'rgba(105, 101, 219, 0.14)';
           ctx.fill();
         }
 
         ctx.beginPath();
         ctx.arc(px, py, (isActive ? 5.5 : 5) / this.viewport.zoom, 0, Math.PI * 2);
-        ctx.fillStyle = '#3370FF';
+        ctx.fillStyle = '#6965db';
         ctx.fill();
         ctx.strokeStyle = '#FFFFFF';
         ctx.lineWidth = (isActive ? 2.5 : 2) / this.viewport.zoom;
@@ -678,171 +689,22 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Overlay chrome (grid / snap guides / drag-select rect / lasso) extracted to
+  // ./render/overlay (P0.B).
   private renderSnapGuides(guides: SnapGuide[]) {
-    const ctx = this.ctx;
-    const vp = this.viewport;
-    const extent = 10000; // Large enough to cover visible area
-
-    ctx.save();
-
-    // 1. Draw dashed guide lines
-    ctx.strokeStyle = '#3B82F6';
-    ctx.lineWidth = 1.5 / vp.zoom;
-    ctx.setLineDash([4 / vp.zoom, 4 / vp.zoom]);
-
-    for (const guide of guides) {
-      ctx.beginPath();
-      if (guide.type === 'vertical') {
-        ctx.moveTo(guide.position, -extent);
-        ctx.lineTo(guide.position, extent);
-      } else {
-        ctx.moveTo(-extent, guide.position);
-        ctx.lineTo(extent, guide.position);
-      }
-      ctx.stroke();
-    }
-
-    // 2. Draw endpoint dots at viewport boundaries
-    ctx.setLineDash([]);
-    const vpLeft = -this.viewport.x / this.viewport.zoom;
-    const vpTop = -this.viewport.y / this.viewport.zoom;
-    const vpRight = vpLeft + this.width / this.viewport.zoom;
-    const vpBottom = vpTop + this.height / this.viewport.zoom;
-    const dotRadius = 3 / vp.zoom;
-
-    for (const guide of guides) {
-      ctx.beginPath();
-      if (guide.type === 'vertical') {
-        ctx.arc(guide.position, vpTop, dotRadius, 0, Math.PI * 2);
-        ctx.arc(guide.position, vpBottom, dotRadius, 0, Math.PI * 2);
-      } else {
-        ctx.arc(vpLeft, guide.position, dotRadius, 0, Math.PI * 2);
-        ctx.arc(vpRight, guide.position, dotRadius, 0, Math.PI * 2);
-      }
-      ctx.fillStyle = '#3B82F6';
-      ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1 / vp.zoom;
-      ctx.stroke();
-    }
-
-    // 3. Draw edge highlights on target elements
-    ctx.strokeStyle = '#3B82F6';
-    ctx.lineWidth = 2.5 / vp.zoom;
-
-    for (const guide of guides) {
-      if (!guide.targetElementId || !guide.targetEdge) continue;
-      const targetEl = this.sceneIndex.byId.get(guide.targetElementId);
-      if (!targetEl) continue;
-
-      const markLen = 12 / vp.zoom;
-      const cx = targetEl.x + targetEl.width / 2;
-      const cy = targetEl.y + targetEl.height / 2;
-
-      ctx.beginPath();
-      switch (guide.targetEdge) {
-        case 'left':
-          ctx.moveTo(targetEl.x, cy - markLen / 2);
-          ctx.lineTo(targetEl.x, cy + markLen / 2);
-          break;
-        case 'right':
-          ctx.moveTo(targetEl.x + targetEl.width, cy - markLen / 2);
-          ctx.lineTo(targetEl.x + targetEl.width, cy + markLen / 2);
-          break;
-        case 'top':
-          ctx.moveTo(cx - markLen / 2, targetEl.y);
-          ctx.lineTo(cx + markLen / 2, targetEl.y);
-          break;
-        case 'bottom':
-          ctx.moveTo(cx - markLen / 2, targetEl.y + targetEl.height);
-          ctx.lineTo(cx + markLen / 2, targetEl.y + targetEl.height);
-          break;
-        case 'centerX':
-          ctx.moveTo(cx, cy - markLen / 2);
-          ctx.lineTo(cx, cy + markLen / 2);
-          break;
-        case 'centerY':
-          ctx.moveTo(cx - markLen / 2, cy);
-          ctx.lineTo(cx + markLen / 2, cy);
-          break;
-      }
-      ctx.stroke();
-    }
-
-    ctx.restore();
+    drawSnapGuides(this.ctx, guides, this.viewport, this.width, this.height, this.sceneIndex);
   }
 
   private renderGrid(gridSize: number) {
-    const ctx = this.ctx;
-    const vp = this.viewport;
-
-    const startX = Math.floor(-vp.x / vp.zoom / gridSize) * gridSize;
-    const startY = Math.floor(-vp.y / vp.zoom / gridSize) * gridSize;
-    const endX = startX + this.width / vp.zoom + gridSize;
-    const endY = startY + this.height / vp.zoom + gridSize;
-
-    ctx.strokeStyle = '#E8E8E8';
-    ctx.lineWidth = 1 / vp.zoom;
-    ctx.beginPath();
-
-    for (let x = startX; x <= endX; x += gridSize) {
-      ctx.moveTo(x, startY);
-      ctx.lineTo(x, endY);
-    }
-    for (let y = startY; y <= endY; y += gridSize) {
-      ctx.moveTo(startX, y);
-      ctx.lineTo(endX, y);
-    }
-    ctx.stroke();
+    drawGrid(this.ctx, gridSize, this.viewport, this.width, this.height);
   }
 
   private renderSelectionRect(box: SelectionBox) {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.fillStyle = 'rgba(51, 112, 255, 0.08)';
-    ctx.fillRect(box.x, box.y, box.width, box.height);
-    ctx.strokeStyle = THEME.selected;
-    ctx.lineWidth = 1 / this.viewport.zoom;
-    ctx.setLineDash([4 / this.viewport.zoom, 4 / this.viewport.zoom]);
-    ctx.strokeRect(box.x, box.y, box.width, box.height);
-    ctx.restore();
+    drawSelectionRect(this.ctx, box, this.viewport.zoom);
   }
 
   private renderLassoHighlight(el: Element) {
-    const ctx = this.ctx;
-    ctx.save();
-
-    if (el.angle !== 0) {
-      const cx = el.x + el.width / 2;
-      const cy = el.y + el.height / 2;
-      ctx.translate(cx, cy);
-      ctx.rotate(el.angle);
-      ctx.translate(-cx, -cy);
-    }
-
-    if (el.type === 'line' || el.type === 'arrow') {
-      const bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-      ctx.fillStyle = 'rgba(51, 112, 255, 0.12)';
-      ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-      ctx.strokeStyle = 'rgba(51, 112, 255, 0.3)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    } else if (el.type === 'mindmap') {
-      const bounds = this.getMindmapBounds(el as MindmapElement);
-      ctx.fillStyle = 'rgba(51, 112, 255, 0.12)';
-      ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-      ctx.strokeStyle = 'rgba(51, 112, 255, 0.3)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    } else {
-      ctx.fillStyle = 'rgba(51, 112, 255, 0.12)';
-      ctx.fillRect(el.x, el.y, el.width, el.height);
-      ctx.strokeStyle = 'rgba(51, 112, 255, 0.3)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(el.x, el.y, el.width, el.height);
-    }
-
-    ctx.restore();
+    drawLassoHighlight(this.ctx, el, this.viewport, this.sceneIndex, (m) => this.getMindmapBounds(m));
   }
 
   renderElement(el: Element, _isSelected: boolean, opacityMultiplier = 1) {
@@ -905,166 +767,23 @@ export class Renderer {
     ctx.restore();
   }
 
-  private renderShapeText(el: Element) {
-    if (!el.text || this.editingElementId === el.id) return;
-    const ctx = this.ctx;
-    const fontSize = el.fontSize ?? 16;
-    const fontFamily = el.fontFamily ?? 'Inter, system-ui, sans-serif';
-    const textAlign = el.textAlign ?? 'center';
-    ctx.save();
-    ctx.fillStyle = el.strokeColor || '#1B1B1F';
-    ctx.font = `${fontSize}px ${fontFamily}`;
-    ctx.textAlign = textAlign;
-    ctx.textBaseline = 'middle';
-    const lines = el.text.split('\n');
-    const lineHeight = fontSize * 1.3;
-    const totalH = lines.length * lineHeight;
-    const startY = el.y + el.height / 2 - totalH / 2 + lineHeight / 2;
-    let textX = el.x + el.width / 2;
-    if (textAlign === 'left') textX = el.x + 8;
-    else if (textAlign === 'right') textX = el.x + el.width - 8;
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], textX, startY + i * lineHeight, el.width - 16);
-    }
-    ctx.restore();
-  }
-
+  // Basic shape drawing extracted to ./render/shapes (P0.B). The renderElement
+  // switch delegates straight to the pure draw* fns; they fall back to variant
+  // shapes and draw inline text internally, using the instance path cache.
   private renderRectangle(el: Element & { roundness?: number }) {
-    const variant = getElementShapeVariant(el);
-    if (variant !== 'rectangle' && variant !== 'round_rectangle' && variant !== 'pill') {
-      this.renderVariantShape(el);
-      return;
-    }
-    const ctx = this.ctx;
-    const r = el.roundness ?? 0;
-
-    ctx.beginPath();
-    if (r > 0) {
-      ctx.roundRect(el.x, el.y, el.width, el.height, r);
-    } else {
-      ctx.rect(el.x, el.y, el.width, el.height);
-    }
-
-    if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      ctx.fillStyle = el.backgroundColor;
-      ctx.fill();
-    }
-    if (el.strokeWidth > 0) {
-      ctx.strokeStyle = el.strokeColor;
-      ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
-      ctx.stroke();
-    }
-    this.renderShapeText(el);
+    drawRectangle(this.ctx, el, this.editingElementId, this.getShapePath, this.rough);
   }
 
   private renderEllipse(el: Element) {
-    const variant = getElementShapeVariant(el);
-    if (variant !== 'ellipse') {
-      this.renderVariantShape(el);
-      return;
-    }
-    const ctx = this.ctx;
-    const cx = el.x + el.width / 2;
-    const cy = el.y + el.height / 2;
-
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, Math.abs(el.width / 2), Math.abs(el.height / 2), 0, 0, Math.PI * 2);
-
-    if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      ctx.fillStyle = el.backgroundColor;
-      ctx.fill();
-    }
-    if (el.strokeWidth > 0) {
-      ctx.strokeStyle = el.strokeColor;
-      ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
-      ctx.stroke();
-    }
-    this.renderShapeText(el);
+    drawEllipse(this.ctx, el, this.editingElementId, this.getShapePath, this.rough);
   }
 
   private renderDiamond(el: Element) {
-    const variant = getElementShapeVariant(el);
-    if (variant !== 'diamond') {
-      this.renderVariantShape(el);
-      return;
-    }
-    const ctx = this.ctx;
-    const cx = el.x + el.width / 2;
-    const cy = el.y + el.height / 2;
-
-    ctx.beginPath();
-    ctx.moveTo(cx, el.y);
-    ctx.lineTo(el.x + el.width, cy);
-    ctx.lineTo(cx, el.y + el.height);
-    ctx.lineTo(el.x, cy);
-    ctx.closePath();
-
-    if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      ctx.fillStyle = el.backgroundColor;
-      ctx.fill();
-    }
-    if (el.strokeWidth > 0) {
-      ctx.strokeStyle = el.strokeColor;
-      ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
-      ctx.stroke();
-    }
-    this.renderShapeText(el);
+    drawDiamond(this.ctx, el, this.editingElementId, this.getShapePath, this.rough);
   }
 
   private renderTriangle(el: Element) {
-    const variant = getElementShapeVariant(el);
-    if (variant !== 'triangle') {
-      this.renderVariantShape(el);
-      return;
-    }
-    const ctx = this.ctx;
-
-    ctx.beginPath();
-    ctx.moveTo(el.x + el.width / 2, el.y);
-    ctx.lineTo(el.x + el.width, el.y + el.height);
-    ctx.lineTo(el.x, el.y + el.height);
-    ctx.closePath();
-
-    if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      ctx.fillStyle = el.backgroundColor;
-      ctx.fill();
-    }
-    if (el.strokeWidth > 0) {
-      ctx.strokeStyle = el.strokeColor;
-      ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
-      ctx.stroke();
-    }
-    this.renderShapeText(el);
-  }
-
-  private renderVariantShape(el: Element & { roundness?: number }) {
-    const ctx = this.ctx;
-    const variant = getElementShapeVariant(el);
-    const path = this.getCachedShapePath(variant, el.width, el.height, el.roundness ?? 8);
-
-    ctx.save();
-    ctx.translate(el.x, el.y);
-
-    if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      ctx.fillStyle = el.backgroundColor;
-      ctx.fill(path);
-    }
-
-    if (el.strokeWidth > 0) {
-      ctx.strokeStyle = el.strokeColor;
-      ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
-      ctx.stroke(path);
-      renderShapeDecoration(ctx, variant, 0, 0, el.width, el.height);
-    }
-
-    ctx.restore();
-
-    this.renderShapeText(el);
+    drawTriangle(this.ctx, el, this.editingElementId, this.getShapePath, this.rough);
   }
 
   private renderConnectionTargetHalo(el: Element) {
@@ -1072,8 +791,8 @@ export class Renderer {
     const pad = 6 / this.viewport.zoom;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(51, 112, 255, 0.22)';
-    ctx.fillStyle = 'rgba(51, 112, 255, 0.05)';
+    ctx.strokeStyle = 'rgba(105, 101, 219, 0.22)';
+    ctx.fillStyle = 'rgba(105, 101, 219, 0.05)';
     ctx.lineWidth = 1.5 / this.viewport.zoom;
 
     if (el.type === 'ellipse') {
@@ -1116,225 +835,9 @@ export class Renderer {
     ctx.restore();
   }
 
-  private getStableBoundCurveControlPoints(
-    linear: LinearElement,
-    points: [number, number][],
-  ): { cp1x: number; cp1y: number; cp2x: number; cp2y: number } {
-    const start = points[0];
-    const end = points[1];
-    const dx = end[0] - start[0];
-    const dy = end[1] - start[1];
-    const distance = Math.hypot(dx, dy);
-    const major = Math.max(Math.abs(dx), Math.abs(dy));
-    const minor = Math.min(Math.abs(dx), Math.abs(dy));
-    const offset = Math.min(Math.abs(dx), Math.abs(dy)) * 0.4;
-
-    let cp1x = start[0] + dx * 0.25 + (Math.abs(dy) > Math.abs(dx) ? offset : 0);
-    let cp1y = start[1] + dy * 0.25 + (Math.abs(dx) > Math.abs(dy) ? offset : 0);
-    let cp2x = end[0] - dx * 0.25 + (Math.abs(dy) > Math.abs(dx) ? offset : 0);
-    let cp2y = end[1] - dy * 0.25 + (Math.abs(dx) > Math.abs(dy) ? offset : 0);
-
-    const applyNormalHandle = (
-      point: [number, number],
-      normal: [number, number],
-    ): [number, number] => {
-      const projected = Math.abs(dx * normal[0] + dy * normal[1]);
-      const handleLength = Math.min(
-        Math.max(major * 0.45, minor * 0.7, projected * 0.9, 20),
-        Math.max(distance * 0.7, 28),
-      );
-      return [point[0] + normal[0] * handleLength, point[1] + normal[1] * handleLength];
-    };
-
-    const startNormal = linear.startBinding
-      ? getConnectionAnchorFromBinding(this.sceneIndex, linear.startBinding)?.normal ?? getAnchorNormalFromFocus(linear.startBinding.focus)
-      : null;
-    const endNormal = linear.endBinding
-      ? getConnectionAnchorFromBinding(this.sceneIndex, linear.endBinding)?.normal ?? getAnchorNormalFromFocus(linear.endBinding.focus)
-      : null;
-
-    if (startNormal) {
-      [cp1x, cp1y] = applyNormalHandle(start, startNormal);
-    }
-    if (endNormal) {
-      [cp2x, cp2y] = applyNormalHandle(end, endNormal);
-    }
-
-    return { cp1x, cp1y, cp2x, cp2y };
-  }
-
+  // Connector (line/arrow) drawing extracted to ./render/linear (P0.B).
   private renderLinear(el: Element) {
-    if (el.type !== 'line' && el.type !== 'arrow') return;
-    const ctx = this.ctx;
-    const linear = el as LinearElement;
-    const pts = getLinearAbsolutePoints(linear, this.sceneIndex);
-    if (pts.length < 2) return;
-
-    ctx.strokeStyle = el.strokeColor;
-    ctx.lineWidth = el.strokeWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    this.applyStrokeStyle(ctx, el.strokeStyle);
-
-    const shape = linear.connectorShape || 'straight';
-    const cornerRadius = Math.min(el.strokeWidth * 2, 12);
-
-    ctx.beginPath();
-
-    if (shape === 'curve' && pts.length >= 2) {
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      if (pts.length === 2) {
-        const { cp1x, cp1y, cp2x, cp2y } = this.getStableBoundCurveControlPoints(linear, pts as [[number, number], [number, number]]);
-        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, pts[1][0], pts[1][1]);
-      } else {
-        for (let i = 0; i < pts.length - 1; i++) {
-          const p0 = pts[Math.max(i - 1, 0)];
-          const p1 = pts[i];
-          const p2 = pts[i + 1];
-          const p3 = pts[Math.min(i + 2, pts.length - 1)];
-          const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
-          const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
-          const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
-          const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
-          ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
-        }
-      }
-    } else if (shape === 'right_angled_polyline' && pts.length >= 2) {
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) {
-        const prev = pts[i - 1];
-        const curr = pts[i];
-        const midX = (prev[0] + curr[0]) / 2;
-        if (i === 1) {
-          ctx.lineTo(midX, prev[1]);
-        }
-        ctx.arcTo(midX, curr[1], curr[0], curr[1], cornerRadius);
-        if (i === pts.length - 1) {
-          ctx.lineTo(curr[0], curr[1]);
-        } else {
-          const next = pts[i + 1];
-          const nextMidX = (curr[0] + next[0]) / 2;
-          ctx.lineTo(nextMidX, curr[1]);
-        }
-      }
-    } else {
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      if (pts.length === 2 || cornerRadius === 0) {
-        for (let i = 1; i < pts.length; i++) {
-          ctx.lineTo(pts[i][0], pts[i][1]);
-        }
-      } else {
-        for (let i = 1; i < pts.length - 1; i++) {
-          ctx.arcTo(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], cornerRadius);
-        }
-        ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-      }
-    }
-    ctx.stroke();
-
-    if (el.type === 'arrow' || el.type === 'line') {
-      const startType = linear.startArrowType || 'none';
-      const endType = linear.endArrowType || 'none';
-
-      if (endType !== 'none' && pts.length >= 2) {
-        const last = pts[pts.length - 1];
-        const prev = pts[pts.length - 2];
-        this.renderArrowHead(prev[0], prev[1], last[0], last[1], el.strokeColor, el.strokeWidth, endType);
-      }
-      if (startType !== 'none' && pts.length >= 2) {
-        this.renderArrowHead(pts[1][0], pts[1][1], pts[0][0], pts[0][1], el.strokeColor, el.strokeWidth, startType);
-      }
-    }
-  }
-
-  private renderArrowHead(
-    fromX: number, fromY: number,
-    toX: number, toY: number,
-    color: string, lineWidth: number,
-    arrowType: ArrowType = 'arrow',
-  ) {
-    const ctx = this.ctx;
-    const headLen = Math.max(10, lineWidth * 4);
-    const angle = Math.atan2(toY - fromY, toX - fromX);
-    const halfAngle = Math.PI / 6;
-
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineWidth = lineWidth;
-
-    switch (arrowType) {
-      case 'arrow': // Filled triangle
-      case 'triangle': {
-        ctx.beginPath();
-        ctx.moveTo(toX, toY);
-        ctx.lineTo(toX - headLen * Math.cos(angle - halfAngle), toY - headLen * Math.sin(angle - halfAngle));
-        ctx.lineTo(toX - headLen * Math.cos(angle + halfAngle), toY - headLen * Math.sin(angle + halfAngle));
-        ctx.closePath();
-        ctx.fill();
-        break;
-      }
-      case 'open_arrow': { // V shape (no fill)
-        ctx.beginPath();
-        ctx.moveTo(toX - headLen * Math.cos(angle - halfAngle), toY - headLen * Math.sin(angle - halfAngle));
-        ctx.lineTo(toX, toY);
-        ctx.lineTo(toX - headLen * Math.cos(angle + halfAngle), toY - headLen * Math.sin(angle + halfAngle));
-        ctx.stroke();
-        break;
-      }
-      case 'hollow_arrow':
-      case 'hollow_triangle': { // Hollow triangle
-        ctx.beginPath();
-        ctx.moveTo(toX, toY);
-        ctx.lineTo(toX - headLen * Math.cos(angle - halfAngle), toY - headLen * Math.sin(angle - halfAngle));
-        ctx.lineTo(toX - headLen * Math.cos(angle + halfAngle), toY - headLen * Math.sin(angle + halfAngle));
-        ctx.closePath();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fill();
-        ctx.stroke();
-        break;
-      }
-      case 'diamond':
-      case 'hollow_diamond': {
-        const r = headLen * 0.6;
-        ctx.beginPath();
-        ctx.moveTo(toX, toY);
-        ctx.lineTo(toX - r * Math.cos(angle) + r * 0.5 * Math.sin(angle), toY - r * Math.sin(angle) - r * 0.5 * Math.cos(angle));
-        ctx.lineTo(toX - 2 * r * Math.cos(angle), toY - 2 * r * Math.sin(angle));
-        ctx.lineTo(toX - r * Math.cos(angle) - r * 0.5 * Math.sin(angle), toY - r * Math.sin(angle) + r * 0.5 * Math.cos(angle));
-        ctx.closePath();
-        if (arrowType === 'hollow_diamond') {
-          ctx.fillStyle = '#FFFFFF';
-        }
-        ctx.fill();
-        ctx.stroke();
-        break;
-      }
-      case 'circle':
-      case 'hollow_circle': {
-        const r = headLen * 0.35;
-        const cx = toX - r * Math.cos(angle);
-        const cy = toY - r * Math.sin(angle);
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        if (arrowType === 'hollow_circle') {
-          ctx.fillStyle = '#FFFFFF';
-        }
-        ctx.fill();
-        ctx.stroke();
-        break;
-      }
-      case 'bar': {
-        const barLen = headLen * 0.6;
-        ctx.beginPath();
-        ctx.moveTo(toX + barLen * Math.sin(angle), toY - barLen * Math.cos(angle));
-        ctx.lineTo(toX - barLen * Math.sin(angle), toY + barLen * Math.cos(angle));
-        ctx.stroke();
-        break;
-      }
-    }
-
-    ctx.restore();
+    drawLinear(this.ctx, el, this.sceneIndex);
   }
 
   private renderText(el: Element) {
@@ -1483,542 +986,30 @@ export class Renderer {
     }
   }
 
+  /** Snapshots the live mindmap draw state for the extracted ./render/mindmap functions. */
+  private mindmapDrawDeps(): MindmapDrawDeps {
+    return {
+      ctx: this.ctx,
+      zoom: this.viewport.zoom,
+      interactiveChrome: this.interactiveChrome,
+      selectedMindmapNode: this.selectedMindmapNode,
+      mindmapDropTarget: this.mindmapDropTarget,
+      editingMindmapNodeId: this.editingMindmapNodeId,
+      mindmapDragPreview: this.mindmapDragPreview,
+      sceneIndex: this.sceneIndex,
+      getMindmapLayout: (el) => this.getMindmapLayout(el),
+      measureMindmapNode: this.measureMindmapNode,
+    };
+  }
+
   private renderMindmap(el: MindmapElement) {
     if (!el.rootNode) return;
     const layout = this.getMindmapLayout(el);
-    this.drawMindmapConnections(el, el.rootNode, layout);
-    this.drawMindmapNode(el, el.rootNode, layout);
-  }
-
-  private isDraggedMindmapNode(elementId: string, nodeId: string) {
-    return this.mindmapDragPreview?.elementId === elementId
-      && this.mindmapDragPreview.sourceNodeId === nodeId;
-  }
-
-  private getNodeRect(layout: Map<string, Rect>, node: MindmapNode, fallbackX: number, fallbackY: number) {
-    const cached = layout.get(node.id);
-    return cached ?? { x: fallbackX, y: fallbackY, w: 60, h: 30 };
-  }
-
-  private layoutMindmapNodes(el: MindmapElement): Map<string, Rect> {
-    const hGap = 60;
-    const vGap = 20;
-    const root = el.rootNode;
-    const layout = new Map<string, Rect>();
-
-    const getSubtreeHeight = (node: MindmapNode): number => {
-      const children = node.collapsed ? [] : node.children;
-      const size = this.getMindmapNodeMeasure(node);
-      const existing = layout.get(node.id);
-      layout.set(node.id, { x: existing?.x ?? 0, y: existing?.y ?? 0, w: size.w, h: size.h });
-      if (children.length === 0) return size.h;
-      let total = 0;
-      for (const child of children) {
-        total += getSubtreeHeight(child);
-      }
-      total += (children.length - 1) * vGap;
-      return Math.max(size.h, total);
-    };
-
-    const layoutTree = (
-      node: MindmapNode,
-      x: number,
-      y: number,
-      direction: 'right' | 'left' | 'down',
-    ) => {
-      const size = this.getMindmapNodeMeasure(node);
-      layout.set(node.id, { x, y, w: size.w, h: size.h });
-
-      const children = node.collapsed ? [] : node.children;
-      if (children.length === 0) return;
-
-      if (direction === 'down') {
-        const childWidths = children.map((c: MindmapNode) => {
-          getSubtreeHeight(c);
-          return layout.get(c.id)?.w ?? 60;
-        });
-        const totalW = childWidths.reduce((a: number, b: number) => a + b, 0) + (children.length - 1) * hGap;
-        let startX = x + size.w / 2 - totalW / 2;
-        for (let i = 0; i < children.length; i++) {
-          layoutTree(children[i], startX, y + size.h + vGap * 2, direction);
-          startX += childWidths[i] + hGap;
-        }
-      } else {
-        const subtreeHeight = getSubtreeHeight(node);
-        let startY = y + size.h / 2 - subtreeHeight / 2;
-        for (const child of children) {
-          const ch = getSubtreeHeight(child);
-          const childRect = layout.get(child.id);
-          const childH = childRect?.h ?? 30;
-          const childW = childRect?.w ?? 60;
-          const childY = startY + ch / 2 - childH / 2;
-          const childX = direction === 'right'
-            ? x + size.w + hGap
-            : x - childW - hGap;
-          layoutTree(child, childX, childY, direction);
-          startY += ch + vGap;
-        }
-      }
-    };
-
-    const elLayout = el.layout || 'mindmap_right';
-    if (elLayout === 'tree_down') {
-      layoutTree(root, el.x, el.y, 'down');
-    } else if (elLayout === 'mindmap_left') {
-      layoutTree(root, el.x, el.y, 'left');
-    } else if (elLayout === 'mindmap_lr') {
-      const size = this.getMindmapNodeMeasure(root);
-      layout.set(root.id, { x: el.x, y: el.y, w: size.w, h: size.h });
-
-      const rightChildren = root.rightChildren?.length ? root.rightChildren : root.children;
-      const leftChildren = root.leftChildren || [];
-
-      let totalRH = 0;
-      for (const child of rightChildren) totalRH += getSubtreeHeight(child);
-      totalRH += Math.max(0, rightChildren.length - 1) * vGap;
-      let ry = el.y + size.h / 2 - totalRH / 2;
-      for (const child of rightChildren) {
-        const ch = getSubtreeHeight(child);
-        const childH = layout.get(child.id)?.h ?? 30;
-        layoutTree(child, el.x + size.w + hGap, ry + ch / 2 - childH / 2, 'right');
-        ry += ch + vGap;
-      }
-
-      let totalLH = 0;
-      for (const child of leftChildren) totalLH += getSubtreeHeight(child);
-      totalLH += Math.max(0, leftChildren.length - 1) * vGap;
-      let ly = el.y + size.h / 2 - totalLH / 2;
-      for (const child of leftChildren) {
-        const ch = getSubtreeHeight(child);
-        const childRect = layout.get(child.id);
-        const childH = childRect?.h ?? 30;
-        const childW = childRect?.w ?? 60;
-        layoutTree(child, el.x - childW - hGap, ly + ch / 2 - childH / 2, 'left');
-        ly += ch + vGap;
-      }
-    } else {
-      layoutTree(root, el.x, el.y, 'right');
-    }
-
-    return layout;
-  }
-
-  private drawMindmapConnections(el: MindmapElement, node: MindmapNode, layout: Map<string, Rect>) {
-    if (this.isDraggedMindmapNode(el.id, node.id)) return;
-    const ctx = this.ctx;
-    const nr = this.getNodeRect(layout, node, el.x, el.y);
-
-    const style = el.lineStyle || { color: '#8B8FA3', width: 2, style: 'solid' as const };
-    ctx.strokeStyle = style.color;
-    ctx.lineWidth = style.width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    if (style.style === 'dashed') {
-      ctx.setLineDash([6, 4]);
-    } else if (style.style === 'dotted') {
-      ctx.setLineDash([2, 4]);
-    } else {
-      ctx.setLineDash([]);
-    }
-
-    const allChildren = [
-      ...(node.collapsed ? [] : node.children),
-      ...(node.collapsed ? [] : (node.leftChildren || [])),
-      ...(node.collapsed ? [] : (node.rightChildren || [])),
-    ].filter((child) => !this.isDraggedMindmapNode(el.id, child.id));
-
-    for (const child of allChildren) {
-      const cr = this.getNodeRect(layout, child, 0, 0);
-      const isLeft = cr.x + cr.w < nr.x;
-      const isDown = el.layout === 'tree_down';
-
-      ctx.beginPath();
-      if (el.branchStyle === 'polyline' || isDown) {
-        if (isDown) {
-          const fromX = nr.x + nr.w / 2, fromY = nr.y + nr.h;
-          const toX = cr.x + cr.w / 2, toY = cr.y;
-          const midY = (fromY + toY) / 2;
-          ctx.moveTo(fromX, fromY);
-          ctx.lineTo(fromX, midY);
-          ctx.lineTo(toX, midY);
-          ctx.lineTo(toX, toY);
-        } else {
-          const fromX = isLeft ? nr.x : nr.x + nr.w;
-          const fromY = nr.y + nr.h / 2;
-          const toX = isLeft ? cr.x + cr.w : cr.x;
-          const toY = cr.y + cr.h / 2;
-          const midX = (fromX + toX) / 2;
-          ctx.moveTo(fromX, fromY);
-          ctx.lineTo(midX, fromY);
-          ctx.lineTo(midX, toY);
-          ctx.lineTo(toX, toY);
-        }
-      } else {
-        const fromX = isLeft ? nr.x : nr.x + nr.w;
-        const fromY = nr.y + nr.h / 2;
-        const toX = isLeft ? cr.x + cr.w : cr.x;
-        const toY = cr.y + cr.h / 2;
-        const cpOffset = Math.abs(toX - fromX) * 0.5;
-        ctx.moveTo(fromX, fromY);
-        ctx.bezierCurveTo(
-          fromX + (isLeft ? -cpOffset : cpOffset), fromY,
-          toX + (isLeft ? cpOffset : -cpOffset), toY,
-          toX, toY,
-        );
-      }
-      ctx.stroke();
-      this.drawMindmapConnections(el, child, layout);
-    }
-    ctx.setLineDash([]);
-  }
-
-  private drawMindmapNode(el: MindmapElement, node: MindmapNode, layout: Map<string, Rect>) {
-    if (this.isDraggedMindmapNode(el.id, node.id)) return;
-    const ctx = this.ctx;
-    const { x, y, w, h } = this.getNodeRect(layout, node, el.x, el.y);
-    const isSelectedNode = this.interactiveChrome
-      && this.selectedMindmapNode?.elementId === el.id
-      && this.selectedMindmapNode.nodeId === node.id
-      && this.editingMindmapNodeId !== node.id;
-    const isDropTargetNode = this.interactiveChrome
-      && this.mindmapDropTarget?.elementId === el.id
-      && this.mindmapDropTarget.nodeId === node.id;
-
-    if (node.nodeShape !== 'text') {
-      ctx.save();
-      ctx.shadowColor = node.nodeType === 'root' ? 'rgba(47, 107, 85, 0.18)' : 'rgba(15, 23, 42, 0.08)';
-      ctx.shadowBlur = node.nodeType === 'root' ? 18 : 10;
-      ctx.shadowOffsetY = 4;
-      ctx.beginPath();
-      const radius = node.nodeShape === 'pill' ? h / 2 : 6;
-      ctx.roundRect(x, y, w, h, radius);
-      ctx.fillStyle = node.backgroundColor || (node.nodeType === 'root' ? '#3370FF' : '#E3EAFD');
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-      ctx.strokeStyle = node.nodeType === 'root' ? 'rgba(0, 0, 0, 0.04)' : (node.backgroundColor || '#3370FF');
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    if (this.editingMindmapNodeId !== node.id) {
-      ctx.fillStyle = node.textColor || (node.nodeType === 'root' && node.nodeShape !== 'text' ? '#FFFFFF' : '#1B1B1F');
-      ctx.font = `${node.fontSize}px Inter, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(node.text || '主题', x + w / 2, y + h / 2, w - 8);
-    }
-
-    if (isSelectedNode) {
-      ctx.save();
-      ctx.beginPath();
-      if (node.nodeShape === 'text') {
-        ctx.roundRect(x - 4, y - 4, w + 8, h + 8, 8);
-      } else {
-        const radius = node.nodeShape === 'pill' ? h / 2 + 4 : 10;
-        ctx.roundRect(x - 4, y - 4, w + 8, h + 8, radius);
-      }
-      ctx.strokeStyle = THEME.selected;
-      ctx.lineWidth = 2 / this.viewport.zoom;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    if (isDropTargetNode) {
-      ctx.save();
-      ctx.beginPath();
-      if (node.nodeShape === 'text') {
-        ctx.roundRect(x - 6, y - 6, w + 12, h + 12, 10);
-      } else {
-        const radius = node.nodeShape === 'pill' ? (h + 12) / 2 : 12;
-        ctx.roundRect(x - 6, y - 6, w + 12, h + 12, radius);
-      }
-      ctx.strokeStyle = '#16A34A';
-      ctx.lineWidth = 2 / this.viewport.zoom;
-      ctx.setLineDash([6 / this.viewport.zoom, 4 / this.viewport.zoom]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-    }
-
-    // Collapse indicator
-    const allChildCount = node.children.length + (node.leftChildren?.length || 0) + (node.rightChildren?.length || 0);
-    if (allChildCount > 0 && node.collapsed) {
-      const ix = x + w + 4;
-      const iy = y + h / 2;
-      ctx.fillStyle = '#8B8FA3';
-      ctx.beginPath();
-      ctx.arc(ix, iy, 6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '10px Inter, system-ui, sans-serif';
-      ctx.fillText('+', ix, iy + 1);
-    }
-
-    const allChildren = [
-      ...(node.collapsed ? [] : node.children),
-      ...(node.collapsed ? [] : (node.leftChildren || [])),
-      ...(node.collapsed ? [] : (node.rightChildren || [])),
-    ].filter((child) => !this.isDraggedMindmapNode(el.id, child.id));
-    for (const child of allChildren) {
-      this.drawMindmapNode(el, child, layout);
-    }
-  }
-
-  private cloneMindmapNode(node: MindmapNode): MindmapNode {
-    return {
-      ...node,
-      children: node.children.map((child) => this.cloneMindmapNode(child)),
-      leftChildren: (node.leftChildren || []).map((child) => this.cloneMindmapNode(child)),
-      rightChildren: (node.rightChildren || []).map((child) => this.cloneMindmapNode(child)),
-    };
-  }
-
-  private addMindmapChildPreview(root: MindmapNode, parentId: string, node: MindmapNode): MindmapNode {
-    if (root.id === parentId) {
-      return {
-        ...root,
-        collapsed: false,
-        children: [...root.children, node],
-      };
-    }
-
-    return {
-      ...root,
-      children: root.children.map((child) => this.addMindmapChildPreview(child, parentId, node)),
-      leftChildren: (root.leftChildren || []).map((child) => this.addMindmapChildPreview(child, parentId, node)),
-      rightChildren: (root.rightChildren || []).map((child) => this.addMindmapChildPreview(child, parentId, node)),
-    };
-  }
-
-  private extractMindmapNodePreview(root: MindmapNode, nodeId: string): { root: MindmapNode; extracted: MindmapNode | null } {
-    const extractFromList = (nodes: MindmapNode[]): { nodes: MindmapNode[]; extracted: MindmapNode | null } => {
-      for (let index = 0; index < nodes.length; index += 1) {
-        const node = nodes[index];
-        if (node.id === nodeId) {
-          return { nodes: [...nodes.slice(0, index), ...nodes.slice(index + 1)], extracted: node };
-        }
-
-        const nextChildren = extractFromList(node.children);
-        if (nextChildren.extracted) {
-          return {
-            nodes: [
-              ...nodes.slice(0, index),
-              { ...node, children: nextChildren.nodes },
-              ...nodes.slice(index + 1),
-            ],
-            extracted: nextChildren.extracted,
-          };
-        }
-
-        const nextLeftChildren = extractFromList(node.leftChildren || []);
-        if (nextLeftChildren.extracted) {
-          return {
-            nodes: [
-              ...nodes.slice(0, index),
-              { ...node, leftChildren: nextLeftChildren.nodes },
-              ...nodes.slice(index + 1),
-            ],
-            extracted: nextLeftChildren.extracted,
-          };
-        }
-
-        const nextRightChildren = extractFromList(node.rightChildren || []);
-        if (nextRightChildren.extracted) {
-          return {
-            nodes: [
-              ...nodes.slice(0, index),
-              { ...node, rightChildren: nextRightChildren.nodes },
-              ...nodes.slice(index + 1),
-            ],
-            extracted: nextRightChildren.extracted,
-          };
-        }
-      }
-
-      return { nodes, extracted: null };
-    };
-
-    if (root.id === nodeId) {
-      return { root, extracted: null };
-    }
-
-    const nextChildren = extractFromList(root.children);
-    if (nextChildren.extracted) {
-      return { root: { ...root, children: nextChildren.nodes }, extracted: nextChildren.extracted };
-    }
-
-    const nextLeftChildren = extractFromList(root.leftChildren || []);
-    if (nextLeftChildren.extracted) {
-      return { root: { ...root, leftChildren: nextLeftChildren.nodes }, extracted: nextLeftChildren.extracted };
-    }
-
-    const nextRightChildren = extractFromList(root.rightChildren || []);
-    if (nextRightChildren.extracted) {
-      return { root: { ...root, rightChildren: nextRightChildren.nodes }, extracted: nextRightChildren.extracted };
-    }
-
-    return { root, extracted: null };
-  }
-
-  private moveMindmapNodePreview(root: MindmapNode, nodeId: string, targetParentId: string): MindmapNode {
-    if (root.id === nodeId || nodeId === targetParentId) return root;
-
-    const draggedNode = this.findMindmapNode(root, nodeId);
-    if (!draggedNode || this.findMindmapNode(draggedNode, targetParentId)) {
-      return root;
-    }
-
-    const clonedRoot = this.cloneMindmapNode(root);
-    const { root: withoutNode, extracted } = this.extractMindmapNodePreview(clonedRoot, nodeId);
-    if (!extracted) return root;
-
-    return this.addMindmapChildPreview(withoutNode, targetParentId, extracted);
-  }
-
-  private getProjectedMindmapNodeRect(el: MindmapElement, sourceNodeId: string, targetNodeId: string) {
-    const projectedRoot = this.moveMindmapNodePreview(el.rootNode, sourceNodeId, targetNodeId);
-    if (projectedRoot === el.rootNode) return null;
-
-    const projectedElement = { ...el, rootNode: projectedRoot };
-    const layout = this.layoutMindmapNodes(projectedElement);
-    return layout.get(sourceNodeId) ?? null;
-  }
-
-  private findMindmapNode(root: MindmapNode, nodeId: string): MindmapNode | null {
-    if (root.id === nodeId) return root;
-    const allChildren = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];
-    for (const child of allChildren) {
-      const found = this.findMindmapNode(child, nodeId);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  private getShiftedNodeRect(layout: Map<string, Rect>, node: MindmapNode, fallbackX: number, fallbackY: number, dx: number, dy: number) {
-    const rect = this.getNodeRect(layout, node, fallbackX, fallbackY);
-    return { x: rect.x + dx, y: rect.y + dy, w: rect.w, h: rect.h };
-  }
-
-  private drawMindmapGhostConnections(el: MindmapElement, node: MindmapNode, layout: Map<string, Rect>, dx: number, dy: number) {
-    const ctx = this.ctx;
-    const nr = this.getShiftedNodeRect(layout, node, el.x, el.y, dx, dy);
-
-    const style = el.lineStyle || { color: '#8B8FA3', width: 2, style: 'solid' as const };
-    ctx.strokeStyle = style.color;
-    ctx.lineWidth = style.width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.setLineDash([]);
-
-    const allChildren = [
-      ...(node.collapsed ? [] : node.children),
-      ...(node.collapsed ? [] : (node.leftChildren || [])),
-      ...(node.collapsed ? [] : (node.rightChildren || [])),
-    ];
-
-    for (const child of allChildren) {
-      const cr = this.getShiftedNodeRect(layout, child, 0, 0, dx, dy);
-      const isLeft = cr.x + cr.w < nr.x;
-
-      ctx.beginPath();
-      const fromX = isLeft ? nr.x : nr.x + nr.w;
-      const fromY = nr.y + nr.h / 2;
-      const toX = isLeft ? cr.x + cr.w : cr.x;
-      const toY = cr.y + cr.h / 2;
-      const cpOffset = Math.abs(toX - fromX) * 0.5;
-      ctx.moveTo(fromX, fromY);
-      ctx.bezierCurveTo(
-        fromX + (isLeft ? -cpOffset : cpOffset), fromY,
-        toX + (isLeft ? cpOffset : -cpOffset), toY,
-        toX, toY,
-      );
-      ctx.stroke();
-      this.drawMindmapGhostConnections(el, child, layout, dx, dy);
-    }
-  }
-
-  private drawMindmapGhostNode(node: MindmapNode, x: number, y: number, w: number, h: number) {
-    const ctx = this.ctx;
-
-    if (node.nodeShape !== 'text') {
-      ctx.save();
-      ctx.shadowColor = 'rgba(15, 23, 42, 0.14)';
-      ctx.shadowBlur = 14;
-      ctx.shadowOffsetY = 6;
-      ctx.beginPath();
-      const radius = node.nodeShape === 'pill' ? h / 2 : 6;
-      ctx.roundRect(x, y, w, h, radius);
-      ctx.fillStyle = node.backgroundColor || (node.nodeType === 'root' ? '#3370FF' : '#E3EAFD');
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-      ctx.strokeStyle = '#2563EB';
-      ctx.lineWidth = 1.5 / this.viewport.zoom;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    ctx.fillStyle = node.textColor || (node.nodeType === 'root' && node.nodeShape !== 'text' ? '#FFFFFF' : '#1B1B1F');
-    ctx.font = `${node.fontSize}px Inter, system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(node.text || '主题', x + w / 2, y + h / 2, w - 8);
-  }
-
-  private drawMindmapGhostSubtree(el: MindmapElement, node: MindmapNode, layout: Map<string, Rect>, dx: number, dy: number) {
-    const { x, y, w, h } = this.getShiftedNodeRect(layout, node, el.x, el.y, dx, dy);
-    this.drawMindmapGhostNode(node, x, y, w, h);
-
-    const allChildren = [
-      ...(node.collapsed ? [] : node.children),
-      ...(node.collapsed ? [] : (node.leftChildren || [])),
-      ...(node.collapsed ? [] : (node.rightChildren || [])),
-    ];
-
-    for (const child of allChildren) {
-      this.drawMindmapGhostSubtree(el, child, layout, dx, dy);
-    }
+    drawMindmap(this.mindmapDrawDeps(), el, layout);
   }
 
   private renderMindmapDragPreview(preview: { elementId: string; sourceNodeId: string; pointerX: number; pointerY: number; offsetX: number; offsetY: number }) {
-    const element = this.sceneIndex.byId.get(preview.elementId);
-    if (!element || element.type !== 'mindmap') return;
-
-    const layout = this.getMindmapLayout(element as MindmapElement);
-
-    const sourceNode = this.findMindmapNode((element as MindmapElement).rootNode, preview.sourceNodeId);
-    const sourceRect = layout.get(preview.sourceNodeId);
-    if (!sourceNode || !sourceRect) return;
-
-    const projectedRect = this.mindmapDropTarget?.elementId === preview.elementId
-      ? this.getProjectedMindmapNodeRect(element as MindmapElement, preview.sourceNodeId, this.mindmapDropTarget.nodeId)
-      : null;
-
-    const dx = projectedRect ? projectedRect.x - sourceRect.x : preview.offsetX;
-    const dy = projectedRect ? projectedRect.y - sourceRect.y : preview.offsetY;
-
-    const fromX = sourceRect.x + sourceRect.w / 2;
-    const fromY = sourceRect.y + sourceRect.h / 2;
-    const toX = projectedRect ? projectedRect.x + projectedRect.w / 2 : preview.pointerX;
-    const toY = projectedRect ? projectedRect.y + projectedRect.h / 2 : preview.pointerY;
-    const curveOffset = Math.max(Math.abs(toX - fromX) * 0.35, 24);
-
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.globalAlpha = 0.92;
-    this.drawMindmapGhostConnections(element as MindmapElement, sourceNode, layout, dx, dy);
-    this.drawMindmapGhostSubtree(element as MindmapElement, sourceNode, layout, dx, dy);
-    if (!projectedRect) {
-      ctx.beginPath();
-      ctx.moveTo(fromX, fromY);
-      ctx.bezierCurveTo(fromX + curveOffset, fromY, toX - curveOffset, toY, toX, toY);
-      ctx.strokeStyle = '#16A34A';
-      ctx.lineWidth = 2 / this.viewport.zoom;
-      ctx.setLineDash([8 / this.viewport.zoom, 5 / this.viewport.zoom]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    ctx.restore();
+    drawMindmapDragPreview(this.mindmapDrawDeps(), preview);
   }
 
   private renderHoverHighlight(el: Element) {
@@ -2095,6 +1086,39 @@ export class Renderer {
     ctx.restore();
   }
 
+  /**
+   * Collective selection outline for a multi-selection. Restores a method that
+   * was referenced but missing from HEAD (tsc error / runtime crash on
+   * multi-select). Draws the shared bounding box in the single-selection style;
+   * per-group resize handles are intentionally not drawn here.
+   */
+  private renderSelectionBoxForBounds(bounds: { x: number; y: number; width: number; height: number }) {
+    const ctx = this.ctx;
+    const padding = 4;
+    const progress = this.selectionAnimProgress;
+    const alpha = 0.5 + 0.5 * progress;
+    const scale = 0.985 + 0.015 * progress;
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+
+    const cx = bounds.x + bounds.width / 2;
+    const cy = bounds.y + bounds.height / 2;
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -cy);
+
+    ctx.strokeStyle = THEME.selected;
+    ctx.lineWidth = 1.5 / this.viewport.zoom;
+    ctx.setLineDash([]);
+    ctx.strokeRect(
+      bounds.x - padding, bounds.y - padding,
+      bounds.width + padding * 2, bounds.height + padding * 2,
+    );
+
+    ctx.restore();
+  }
+
   private renderSelectionBox(el: Element) {
     const ctx = this.ctx;
     const padding = 4;
@@ -2159,7 +1183,7 @@ export class Renderer {
           ctx.fill();
         }
 
-        ctx.fillStyle = isHovered ? '#3B82F6' : '#FFFFFF';
+        ctx.fillStyle = isHovered ? '#6965db' : '#FFFFFF';
         ctx.strokeStyle = THEME.selected;
         ctx.lineWidth = 1.5 / this.viewport.zoom;
         ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);
@@ -2192,7 +1216,7 @@ export class Renderer {
         ctx.fill();
       }
 
-      ctx.fillStyle = isHovered ? '#3B82F6' : '#FFFFFF';
+      ctx.fillStyle = isHovered ? '#6965db' : '#FFFFFF';
       ctx.strokeStyle = THEME.selected;
       ctx.lineWidth = 1.5 / this.viewport.zoom;
       ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);
@@ -2231,16 +1255,7 @@ export class Renderer {
   }
 
   private applyStrokeStyle(ctx: CanvasRenderingContext2D, style: string) {
-    switch (style) {
-      case 'dashed':
-        ctx.setLineDash([8, 4]);
-        break;
-      case 'dotted':
-        ctx.setLineDash([2, 4]);
-        break;
-      default:
-        ctx.setLineDash([]);
-    }
+    applyStrokeStyleShared(ctx, style);
   }
 
   getMindmapNodeAtPoint(el: MindmapElement, x: number, y: number): MindmapNode | null {

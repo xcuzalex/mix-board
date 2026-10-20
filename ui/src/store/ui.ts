@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import type { ToolType } from '../types/tool';
 import type { ShapeVariant } from '../types/element';
+import {
+  type Theme,
+  type EffectiveTheme,
+  applyTheme,
+  loadStoredTheme,
+  storeTheme,
+} from '../theme';
 
 interface UIStore {
   // Tool state
@@ -49,9 +56,18 @@ interface UIStore {
   // Cursor
   cursorStyle: string;
   setCursorStyle: (style: string) => void;
+
+  // Theme (light / dark / system)
+  theme: Theme;
+  effectiveTheme: EffectiveTheme;
+  setTheme: (theme: Theme) => void;
+  cycleTheme: () => void;
 }
 
-export const useUIStore = create<UIStore>()((set) => ({
+const initialTheme = loadStoredTheme();
+const initialEffectiveTheme = applyTheme(initialTheme);
+
+export const useUIStore = create<UIStore>()((set, get) => ({
   activeTool: 'select',
   setActiveTool: (tool) => set({ activeTool: tool }),
   activeShapeVariant: 'round_rectangle',
@@ -106,4 +122,17 @@ export const useUIStore = create<UIStore>()((set) => ({
 
   cursorStyle: 'default',
   setCursorStyle: (style) => set({ cursorStyle: style }),
+
+  theme: initialTheme,
+  effectiveTheme: initialEffectiveTheme,
+  setTheme: (theme) => {
+    storeTheme(theme);
+    const effectiveTheme = applyTheme(theme);
+    set({ theme, effectiveTheme });
+  },
+  cycleTheme: () => {
+    const order: Theme[] = ['light', 'dark', 'system'];
+    const next = order[(order.indexOf(get().theme) + 1) % order.length];
+    get().setTheme(next);
+  },
 }));

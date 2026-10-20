@@ -6,6 +6,7 @@ import type {
 } from '../types/element';
 import type { ToolType } from '../types/tool';
 import { createBaseProperties } from '../types/element';
+import { canvasTheme } from './canvas-theme';
 import { generateId } from '../utils/id';
 import { snapToGrid, snapToElements, type SnapGuide } from '../utils/math';
 import { hitTest, getResizeHandle, type HandlePosition } from './hit-test';
@@ -747,6 +748,7 @@ export function createElementForTool(
         points: [[0, 0], [0, 0]],
         startBinding: null, endBinding: null,
         startArrowType: 'none', endArrowType: 'none',
+        strokeColor: canvasTheme.foreground,
       } as LinearElement;
     case 'arrow':
       return {
@@ -755,7 +757,7 @@ export function createElementForTool(
         points: [[0, 0], [0, 0]],
         startBinding: null, endBinding: null,
         startArrowType: 'none', endArrowType: 'arrow',
-        strokeColor: '#1B1B1F',
+        strokeColor: canvasTheme.foreground,
       } as LinearElement;
     case 'freedraw':
       return {
@@ -763,7 +765,7 @@ export function createElementForTool(
         points: [],
         pressures: [],
         strokeWidth: 3,
-        strokeColor: '#1B1B1F',
+        strokeColor: canvasTheme.foreground,
         backgroundColor: 'transparent',
       } as FreedrawElement;
     case 'highlighter':
@@ -798,13 +800,13 @@ export function createElementForTool(
         ...base, type: 'text',
         text: '',
         fontSize: 20,
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: "'Kalam', 'Inter', system-ui, sans-serif",
         textAlign: 'left',
         verticalAlign: 'top',
         containerId: null,
         width: 200,
         height: 30,
-        strokeColor: '#1B1B1F',
+        strokeColor: canvasTheme.foreground,
         backgroundColor: 'transparent',
       } as TextElement;
     case 'sticky_note':
