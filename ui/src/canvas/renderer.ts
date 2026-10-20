@@ -23,7 +23,7 @@ import {
   type GetShapePath,
 } from './render/shapes';
 import { drawLinear } from './render/linear';
-import { drawMarkdown } from './render/markdown';
+import { drawMarkdown, type LinkHit } from './render/markdown';
 import {
   type Rect,
   getMindmapLayoutSignature,
@@ -156,6 +156,8 @@ export class Renderer {
   private selectionAnimStartTime = 0;
   private sceneIndexCache: { index: SceneIndex; elements: Element[] } | null = null;
   private rough: RoughCanvas;
+  /** [[link]] hit regions collected during the scene pass, in canvas coords. */
+  private linkHits: Array<{ elementId: string } & LinkHit> = [];
 
   constructor(ctx: CanvasRenderingContext2D, viewport: Viewport) {
     this.ctx = ctx;
@@ -176,6 +178,17 @@ export class Renderer {
 
   setHoveredHandle(handle: string | null) {
     this.hoveredHandle = handle;
+  }
+
+  /** Returns the [[link]] at a canvas-space point, if any (from the last scene pass). */
+  getLinkAtPoint(x: number, y: number): { elementId: string; name: string } | null {
+    for (let i = this.linkHits.length - 1; i >= 0; i -= 1) {
+      const h = this.linkHits[i];
+      if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
+        return { elementId: h.elementId, name: h.name };
+      }
+    }
+    return null;
   }
 
   private isElementVisible(el: Element): boolean {
@@ -465,6 +478,7 @@ export class Renderer {
   ) {
     this.refreshTextLayoutCachesIfNeeded();
     this.sceneIndex = this.getSceneIndex(elements);
+    this.linkHits = [];
     this.selectedMindmapNode = null;
     this.editingElementId = editingElementId ?? null;
     this.editingMindmapNodeId = editingMindmapNodeId ?? null;
@@ -925,6 +939,7 @@ export class Renderer {
     if (el.text && this.editingElementId !== el.id) {
       ctx.textAlign = 'left';
       const padding = 12;
+      const hits: LinkHit[] = [];
       drawMarkdown(ctx, el.text, {
         x: el.x + padding,
         y: el.y + padding,
@@ -932,7 +947,8 @@ export class Renderer {
         fontSize: el.fontSize ?? 16,
         fontFamily: el.fontFamily ?? "'Kalam', 'Inter', system-ui, sans-serif",
         color: '#1B1B1F',
-      });
+      }, hits);
+      for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
     }
 
     // Author display (bottom left)

@@ -23,6 +23,7 @@ import {
   moveMindmapNode,
 } from './mindmap-ops';
 import { useCanvasShortcuts } from './useCanvasShortcuts';
+import { buildLinkIndex } from '../utils/links';
 import { getEditableDraft, computeEditingPosition } from './text-editing';
 import { canvasTheme, isDefaultBackground, setCanvasTheme } from './canvas-theme';
 import {
@@ -749,6 +750,28 @@ export function Canvas() {
     const rect = canvas.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
+
+    // Click a [[link]] rendered on a card → jump to the linked note.
+    if (activeTool === 'select') {
+      const cp = viewport.screenToCanvas(screenX, screenY);
+      const link = sceneRendererRef.current?.getLinkAtPoint(cp.x, cp.y);
+      if (link) {
+        const targetId = buildLinkIndex(elements).titleToId.get(link.name.toLowerCase());
+        const target = targetId && targetId !== link.elementId
+          ? elements.find((el) => el.id === targetId)
+          : undefined;
+        if (target) {
+          setSelectedIds([target.id]);
+          setSelectedMindmapNode(
+            target.type === 'mindmap'
+              ? { elementId: target.id, nodeId: (target as MindmapElement).rootNode.id }
+              : null,
+          );
+          setViewport(rect.width / 2 - (target.x + target.width / 2) * zoom, rect.height / 2 - (target.y + target.height / 2) * zoom);
+          return;
+        }
+      }
+    }
 
     // Space-drag for panning
     if (spaceRef.current || activeTool === 'hand') {

@@ -17,6 +17,15 @@ export interface MarkdownOptions {
   color: string;
 }
 
+/** A clickable [[link]] region in canvas coordinates (collected while drawing). */
+export interface LinkHit {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 type InlineRun = { text: string; bold: boolean; italic: boolean; code: boolean; link: boolean };
 
 const CODE_FAMILY = "'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace";
@@ -95,8 +104,8 @@ function parseBlocks(source: string, base: number): Block[] {
   return blocks;
 }
 
-/** Draws Markdown and returns the total height used. */
-export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts: MarkdownOptions): number {
+/** Draws Markdown and returns the total height used. Collects [[link]] hit regions when `hits` is given. */
+export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts: MarkdownOptions, hits?: LinkHit[]): number {
   const { x, width, fontSize, fontFamily, color } = opts;
   const blocks = parseBlocks(source, fontSize);
   let y = opts.y;
@@ -161,6 +170,9 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
         : block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
       ctx.textBaseline = 'top';
       ctx.fillText(word, cursorX, y);
+      if (run.link && hits && word.trim()) {
+        hits.push({ name: run.text, x: cursorX, y, w, h: block.size * 1.3 });
+      }
       cursorX += w;
     };
 
