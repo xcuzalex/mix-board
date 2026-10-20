@@ -25,6 +25,8 @@ interface UIStore {
   // Selection
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
+  selectedMindmapNode: { elementId: string; nodeId: string } | null;
+  setSelectedMindmapNode: (node: { elementId: string; nodeId: string } | null) => void;
   addToSelection: (id: string) => void;
   removeFromSelection: (id: string) => void;
   clearSelection: () => void;
@@ -83,6 +85,8 @@ export const useUIStore = create<UIStore>()((set, get) => ({
 
   selectedIds: [],
   setSelectedIds: (ids) => set({ selectedIds: ids }),
+  selectedMindmapNode: null,
+  setSelectedMindmapNode: (node) => set({ selectedMindmapNode: node }),
   addToSelection: (id) =>
     set((state) => ({
       selectedIds: state.selectedIds.includes(id)

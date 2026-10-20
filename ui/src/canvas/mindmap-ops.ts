@@ -50,6 +50,22 @@ export function findMindmapNode(root: MindmapNode, nodeId: string): MindmapNode 
   return null;
 }
 
+/** The parent node of `nodeId`, or null if `nodeId` is the root or not found. */
+export function findMindmapParent(root: MindmapNode, nodeId: string): MindmapNode | null {
+  const children = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];
+  for (const child of children) {
+    if (child.id === nodeId) return root;
+    const found = findMindmapParent(child, nodeId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Ordered sibling list a node belongs to (its parent's combined children). */
+export function getMindmapSiblings(parent: MindmapNode): MindmapNode[] {
+  return [...parent.children, ...(parent.leftChildren || []), ...(parent.rightChildren || [])];
+}
+
 export function visitMindmapNodes(root: MindmapNode, visit: (node: MindmapNode) => void) {
   visit(root);
   const children = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];

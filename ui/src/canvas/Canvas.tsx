@@ -183,7 +183,8 @@ export function Canvas() {
   // Text editing state
   const [editingElement, setEditingElement] = useState<Element | null>(null);
   const [editingMindmapNode, setEditingMindmapNode] = useState<{ elementId: string; nodeId: string } | null>(null);
-  const [selectedMindmapNode, setSelectedMindmapNode] = useState<{ elementId: string; nodeId: string } | null>(null);
+  const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
+  const setSelectedMindmapNode = useUIStore((s) => s.setSelectedMindmapNode);
   const [hoveredConnectableId, setHoveredConnectableId] = useState<string | null>(null);
   const [hoveredConnectionElementId, setHoveredConnectionElementId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');

@@ -564,8 +564,15 @@ export class Renderer {
     } else if (options.selectedIds.length === 1) {
       const selectedId = options.selectedIds[0];
       const el = this.sceneIndex.byId.get(selectedId);
-      if (el && this.editingElementId !== el.id && !(el.type === 'mindmap' && this.selectedMindmapNode?.elementId === el.id)) {
-        this.renderSelectionBox(el);
+      if (el && this.editingElementId !== el.id) {
+        if (el.type === 'mindmap' && this.selectedMindmapNode?.elementId === el.id) {
+          // Redraw the mindmap on the overlay (interactiveChrome=true) so the
+          // selected node ring shows, including for selections made elsewhere
+          // (e.g. the outline panel).
+          this.renderMindmap(el as MindmapElement);
+        } else {
+          this.renderSelectionBox(el);
+        }
       }
     }
 
