@@ -666,13 +666,13 @@ export class Renderer {
         if (isActive || isHovered) {
           ctx.beginPath();
           ctx.arc(px, py, (isActive ? 10 : 8) / this.viewport.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = isActive ? 'rgba(105, 101, 219, 0.22)' : 'rgba(105, 101, 219, 0.14)';
+          ctx.fillStyle = isActive ? 'rgba(0, 122, 255, 0.22)' : 'rgba(0, 122, 255, 0.14)';
           ctx.fill();
         }
 
         ctx.beginPath();
         ctx.arc(px, py, (isActive ? 5.5 : 5) / this.viewport.zoom, 0, Math.PI * 2);
-        ctx.fillStyle = '#6965db';
+        ctx.fillStyle = '#007AFF';
         ctx.fill();
         ctx.strokeStyle = '#FFFFFF';
         ctx.lineWidth = (isActive ? 2.5 : 2) / this.viewport.zoom;
@@ -791,8 +791,8 @@ export class Renderer {
     const pad = 6 / this.viewport.zoom;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(105, 101, 219, 0.22)';
-    ctx.fillStyle = 'rgba(105, 101, 219, 0.05)';
+    ctx.strokeStyle = 'rgba(0, 122, 255, 0.22)';
+    ctx.fillStyle = 'rgba(0, 122, 255, 0.05)';
     ctx.lineWidth = 1.5 / this.viewport.zoom;
 
     if (el.type === 'ellipse') {
@@ -1183,7 +1183,7 @@ export class Renderer {
           ctx.fill();
         }
 
-        ctx.fillStyle = isHovered ? '#6965db' : '#FFFFFF';
+        ctx.fillStyle = isHovered ? '#007AFF' : '#FFFFFF';
         ctx.strokeStyle = THEME.selected;
         ctx.lineWidth = 1.5 / this.viewport.zoom;
         ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);
@@ -1216,7 +1216,7 @@ export class Renderer {
         ctx.fill();
       }
 
-      ctx.fillStyle = isHovered ? '#6965db' : '#FFFFFF';
+      ctx.fillStyle = isHovered ? '#007AFF' : '#FFFFFF';
       ctx.strokeStyle = THEME.selected;
       ctx.lineWidth = 1.5 / this.viewport.zoom;
       ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);

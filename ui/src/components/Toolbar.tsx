@@ -12,20 +12,23 @@ import {
   type LibraryItem,
 } from './shapeLibrary';
 
-const MAIN_TOOLS: Array<{ kind: 'tool'; tool: ToolType; label: string } | { kind: 'shape'; label: string } | { kind: 'library'; label: string }> = [
-  { kind: 'tool', tool: 'select', label: '选择' },
-  { kind: 'tool', tool: 'hand', label: '抓手' },
-  { kind: 'shape', label: '图形' },
-  { kind: 'tool', tool: 'text', label: '文本' },
-  { kind: 'tool', tool: 'sticky_note', label: '便签' },
-  { kind: 'tool', tool: 'arrow', label: '箭头' },
-  { kind: 'tool', tool: 'frame', label: '框架' },
-  { kind: 'tool', tool: 'section', label: '分区' },
-  { kind: 'tool', tool: 'freedraw', label: '画笔' },
-  { kind: 'tool', tool: 'mindmap', label: '脑图' },
-  { kind: 'tool', tool: 'image', label: '图片' },
-  { kind: 'library', label: '素材' },
+// Note-first toolbar: the primary column foregrounds note tools; drawing tools
+// live in a secondary "绘图" flyout so the surface stays calm (苹果无边际).
+const NOTE_TOOLS: Array<{ tool: ToolType; label: string }> = [
+  { tool: 'text', label: '文本' },
+  { tool: 'sticky_note', label: '便签' },
+  { tool: 'mindmap', label: '脑图' },
+  { tool: 'frame', label: '框架' },
 ];
+
+const DRAW_TOOLS: Array<{ tool: ToolType; label: string }> = [
+  { tool: 'arrow', label: '箭头' },
+  { tool: 'freedraw', label: '画笔' },
+  { tool: 'section', label: '分区' },
+  { tool: 'image', label: '图片' },
+];
+
+const DRAW_TOOL_SET = new Set<ToolType>(['arrow', 'line', 'freedraw', 'section', 'image']);
 
 export function Toolbar() {
   const activeTool = useUIStore((s) => s.activeTool);
@@ -39,7 +42,7 @@ export function Toolbar() {
   const addElement = useDocumentStore((s) => s.addElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
 
-  const [showShapePanel, setShowShapePanel] = useState(false);
+  const [showDrawPanel, setShowDrawPanel] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const [query, setQuery] = useState('');
   const closeTimerRef = useRef<number | null>(null);
@@ -51,18 +54,18 @@ export function Toolbar() {
     }
   };
 
-  const openShapePanel = () => {
+  const openDrawPanel = () => {
     clearCloseTimer();
-    setShowShapePanel(true);
+    setShowDrawPanel(true);
   };
 
-  const scheduleCloseShapePanel = () => {
+  const scheduleCloseDrawPanel = () => {
     clearCloseTimer();
     if (showLibrary) return;
     closeTimerRef.current = window.setTimeout(() => {
-      setShowShapePanel(false);
+      setShowDrawPanel(false);
       closeTimerRef.current = null;
-    }, 140);
+    }, 160);
   };
 
   useEffect(() => () => clearCloseTimer(), []);
@@ -155,24 +158,27 @@ export function Toolbar() {
         setActiveTool(item.tool);
       }
     }
-    setShowShapePanel(false);
+    setShowDrawPanel(false);
     setShowLibrary(false);
   };
 
+  const pickTool = (tool: ToolType) => {
+    setActiveTool(tool);
+    setShowDrawPanel(false);
+  };
+
+  const drawActive = isShapeToolActive(activeTool) || DRAW_TOOL_SET.has(activeTool);
   const toolbarLeft = showLibrary ? 'left-[18.5rem]' : 'left-3';
 
   return (
     <>
       {showLibrary && (
-        <div className="absolute left-3 top-4 bottom-4 z-20 w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-[0_8px_24px_rgba(0,0,0,0.10)] backdrop-blur dark:border-white/10 dark:bg-[#23232a]/95">
-          <div className="border-b border-slate-200 px-4 py-3 dark:border-white/10">
+        <div className="absolute left-3 top-4 bottom-4 z-20 w-64 overflow-hidden rounded-[20px] border border-black/[0.06] bg-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/80">
+          <div className="border-b border-black/[0.06] px-4 py-3 dark:border-white/10">
             <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">素材</div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">点击后直接插入到当前画布</div>
-              </div>
+              <div className="text-[15px] font-semibold tracking-tight text-slate-800 dark:text-slate-100">素材</div>
               <button
-                className="rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10 dark:hover:text-slate-200"
+                className="rounded-full p-1 text-slate-400 transition hover:bg-black/[0.05] hover:text-slate-600 dark:hover:bg-white/10 dark:hover:text-slate-200"
                 onClick={() => setShowLibrary(false)}
                 title="关闭素材面板"
               >
@@ -181,7 +187,7 @@ export function Toolbar() {
                 </svg>
               </button>
             </div>
-            <div className="mt-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+            <div className="mt-3 flex items-center gap-2 rounded-xl bg-black/[0.04] px-3 py-2 dark:bg-white/5">
               <svg viewBox="0 0 24 24" className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                 <path d="M10.5 18a7.5 7.5 0 1 1 5.3-2.2L20 20" />
               </svg>
@@ -208,8 +214,8 @@ export function Toolbar() {
                         key={item.id}
                         className={`group flex h-10 items-center justify-center rounded-xl px-1.5 py-1.5 transition ${
                           active
-                            ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-400/15 dark:text-violet-300 dark:ring-violet-400/30'
-                            : 'bg-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
+                            ? 'bg-[#007aff]/12 text-[#007aff] dark:bg-[#0a84ff]/20 dark:text-[#4aa8ff]'
+                            : 'bg-transparent text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
                         }`}
                         onClick={() => selectItem(item)}
                         title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
@@ -226,117 +232,106 @@ export function Toolbar() {
       )}
 
       <div className={`absolute top-1/2 z-20 -translate-y-1/2 transition-all duration-200 ${toolbarLeft}`}>
-        <div className="flex w-14 flex-col items-center gap-1 rounded-2xl border border-slate-200 bg-white/92 p-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.08)] backdrop-blur dark:border-white/10 dark:bg-[#23232a]/92">
-          <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#fff2df,#eef8ff)] text-slate-700 shadow-sm dark:bg-[linear-gradient(135deg,#3a3320,#1f2a33)] dark:text-slate-200">
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M5.5 18V6.5L12 13l6.5-6.5V18" />
-              <path d="M9.2 9.8l2.8 2.8 2.8-2.8" />
-            </svg>
-          </div>
+        <div className="flex w-[52px] flex-col items-center gap-0.5 rounded-[20px] border border-black/[0.06] bg-white/70 p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.10)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/70">
+          <ToolbarButton active={activeTool === 'select'} label="选择" onClick={() => pickTool('select')}>
+            <ToolGlyph tool="select" className="h-5 w-5" />
+          </ToolbarButton>
+          <ToolbarButton active={activeTool === 'hand'} label="抓手" onClick={() => pickTool('hand')}>
+            <ToolGlyph tool="hand" className="h-5 w-5" />
+          </ToolbarButton>
 
-          {MAIN_TOOLS.map((item) => {
-            if (item.kind === 'shape') {
-              const active = isShapeToolActive(activeTool);
-              return (
-                <div
-                  key={item.label}
-                  className="relative"
-                  onMouseEnter={openShapePanel}
-                  onMouseLeave={scheduleCloseShapePanel}
-                >
-                  <ToolbarButton
-                    active={active}
-                    label={item.label}
-                    onClick={() => {
-                      if (!isShapeToolActive(activeTool)) {
-                        setActiveTool('rectangle');
-                      }
-                    }}
-                  >
-                    <ToolGlyph tool="rectangle" shapeVariant={activeShapeVariant} className="h-5 w-5" />
-                  </ToolbarButton>
+          <Divider />
 
-                  {showShapePanel && !showLibrary && (
-                    <div className="absolute left-full top-0 ml-3 w-56 rounded-2xl border border-slate-200 bg-white/96 p-3 shadow-[0_8px_24px_rgba(0,0,0,0.10)] backdrop-blur dark:border-white/10 dark:bg-[#23232a]/96">
-                      <div className="grid grid-cols-5 gap-2">
-                        {QUICK_SHAPE_ITEMS.map((shape) => (
-                          <button
-                            key={shape.id}
-                            className={`flex h-9 items-center justify-center rounded-xl border transition ${
-                              activeTool === shape.tool && activeShapeVariant === shape.shapeVariant
-                                ? 'border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-400/40 dark:bg-violet-400/15 dark:text-violet-300'
-                                : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:border-white/20 dark:hover:bg-white/10'
-                            }`}
-                            title={shape.label}
-                            onClick={() => {
-                              selectItem(shape);
-                              clearCloseTimer();
-                            }}
-                          >
-                            <ToolGlyph tool={shape.tool} shapeVariant={shape.shapeVariant} className="h-4 w-4" />
-                          </button>
-                        ))}
-                      </div>
-                      <button
-                        className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-100 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-white/20 dark:hover:bg-white/10"
-                        onClick={() => {
-                          setShowLibrary(true);
-                          setShowShapePanel(false);
-                        }}
-                      >
-                        更多组件
-                        <span className="rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">全部</span>
-                      </button>
-                    </div>
-                  )}
+          {NOTE_TOOLS.map((item) => (
+            <ToolbarButton
+              key={item.tool}
+              active={activeTool === item.tool}
+              label={item.label}
+              onClick={() => pickTool(item.tool)}
+            >
+              <ToolGlyph tool={item.tool} className="h-5 w-5" />
+            </ToolbarButton>
+          ))}
+
+          <Divider />
+
+          {/* Drawing tools — tucked into a secondary flyout */}
+          <div className="relative" onMouseEnter={openDrawPanel} onMouseLeave={scheduleCloseDrawPanel}>
+            <ToolbarButton
+              active={drawActive}
+              label="绘图工具"
+              onClick={() => {
+                if (!drawActive) setActiveTool('rectangle');
+                setShowDrawPanel((v) => !v);
+              }}
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15.5 4.5l4 4L8 20l-4 1 1-4z" />
+                <path d="M13.5 6.5l4 4" />
+              </svg>
+            </ToolbarButton>
+
+            {showDrawPanel && !showLibrary && (
+              <div className="absolute left-full top-0 ml-3 w-60 rounded-[20px] border border-black/[0.06] bg-white/80 p-3 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/85">
+                <div className="mb-2 px-1 text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">工具</div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {DRAW_TOOLS.map((item) => (
+                    <button
+                      key={item.tool}
+                      className={`flex h-10 items-center justify-center rounded-xl transition ${
+                        activeTool === item.tool
+                          ? 'bg-[#007aff]/12 text-[#007aff] dark:bg-[#0a84ff]/20 dark:text-[#4aa8ff]'
+                          : 'text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
+                      }`}
+                      title={item.label}
+                      onClick={() => pickTool(item.tool)}
+                    >
+                      <ToolGlyph tool={item.tool} className="h-5 w-5" />
+                    </button>
+                  ))}
                 </div>
-              );
-            }
 
-            if (item.kind === 'library') {
-              return (
-                <ToolbarButton
-                  key={item.label}
-                  active={showLibrary}
-                  label={item.label}
+                <div className="mb-2 mt-3 px-1 text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">形状</div>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {QUICK_SHAPE_ITEMS.map((shape) => (
+                    <button
+                      key={shape.id}
+                      className={`flex h-9 items-center justify-center rounded-xl transition ${
+                        activeTool === shape.tool && activeShapeVariant === shape.shapeVariant
+                          ? 'bg-[#007aff]/12 text-[#007aff] dark:bg-[#0a84ff]/20 dark:text-[#4aa8ff]'
+                          : 'text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
+                      }`}
+                      title={shape.label}
+                      onClick={() => {
+                        selectItem(shape);
+                        clearCloseTimer();
+                      }}
+                    >
+                      <ToolGlyph tool={shape.tool} shapeVariant={shape.shapeVariant} className="h-4 w-4" />
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-black/[0.04] text-[13px] font-medium text-slate-600 transition hover:bg-black/[0.07] dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
                   onClick={() => {
-                    setShowLibrary((value) => !value);
-                    setShowShapePanel(false);
+                    setShowLibrary(true);
+                    setShowDrawPanel(false);
                   }}
                 >
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="6.5" cy="6.5" r="1.2" />
-                    <circle cx="12" cy="6.5" r="1.2" />
-                    <circle cx="17.5" cy="6.5" r="1.2" />
-                    <circle cx="6.5" cy="12" r="1.2" />
-                    <circle cx="12" cy="12" r="1.2" />
-                    <circle cx="17.5" cy="12" r="1.2" />
-                    <circle cx="6.5" cy="17.5" r="1.2" />
-                    <circle cx="12" cy="17.5" r="1.2" />
-                    <circle cx="17.5" cy="17.5" r="1.2" />
-                  </svg>
-                </ToolbarButton>
-              );
-            }
-
-            return (
-              <ToolbarButton
-                key={item.tool}
-                active={activeTool === item.tool}
-                label={item.label}
-                onClick={() => {
-                  setActiveTool(item.tool);
-                  setShowShapePanel(false);
-                }}
-              >
-                <ToolGlyph tool={item.tool} className="h-5 w-5" />
-              </ToolbarButton>
-            );
-          })}
+                  更多素材
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </>
   );
+}
+
+function Divider() {
+  return <div className="my-1 h-px w-6 bg-black/[0.07] dark:bg-white/10" />;
 }
 
 function ToolbarButton({
@@ -352,10 +347,10 @@ function ToolbarButton({
 }) {
   return (
     <button
-      className={`flex h-10 w-10 items-center justify-center rounded-2xl transition ${
+      className={`flex h-10 w-10 items-center justify-center rounded-[14px] transition ${
         active
-          ? 'bg-violet-50 text-violet-700 shadow-sm dark:bg-violet-400/15 dark:text-violet-300'
-          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
+          ? 'bg-[#007aff]/12 text-[#007aff] dark:bg-[#0a84ff]/20 dark:text-[#4aa8ff]'
+          : 'text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
       }`}
       onClick={onClick}
       title={label}

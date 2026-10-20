@@ -47,16 +47,16 @@ export function ZoomControl() {
     setViewport(0, 0);
   };
 
-  const btn = 'flex items-center justify-center rounded text-gray-600 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-white/10';
+  const btn = 'flex items-center justify-center rounded-lg text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-300 dark:hover:bg-white/10';
 
   return (
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white dark:bg-[#23232a] rounded-lg shadow-lg border border-gray-200 dark:border-white/10 px-2 py-1 z-10">
+    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/75 dark:bg-[#1c1c1e]/75 backdrop-blur-xl rounded-2xl shadow-[0_1px_2px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.10)] border border-black/[0.06] dark:border-white/10 px-2 py-1 z-10">
       <button className={`w-7 h-7 text-sm ${btn}`} onClick={zoomOut} title="缩小">−</button>
       <button className={`px-2 h-7 text-xs min-w-[48px] ${btn}`} onClick={resetZoom} title="重置缩放">
         {Math.round(zoom * 100)}%
       </button>
       <button className={`w-7 h-7 text-sm ${btn}`} onClick={zoomIn} title="放大">+</button>
-      <span className="mx-0.5 h-5 w-px bg-gray-200 dark:bg-white/10" />
+      <span className="mx-0.5 h-5 w-px bg-black/[0.08] dark:bg-white/10" />
       <button className={`w-7 h-7 ${btn}`} onClick={cycleTheme} title={THEME_LABEL[theme]} aria-label="切换主题">
         <ThemeIcon theme={theme} />
       </button>

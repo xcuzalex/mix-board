@@ -45,7 +45,7 @@ export function drawGrid(
 
 export function drawSelectionRect(ctx: CanvasRenderingContext2D, box: Box, zoom: number) {
   ctx.save();
-  ctx.fillStyle = 'rgba(105, 101, 219, 0.08)';
+  ctx.fillStyle = 'rgba(0, 122, 255, 0.08)';
   ctx.fillRect(box.x, box.y, box.width, box.height);
   ctx.strokeStyle = THEME.selected;
   ctx.lineWidth = 1 / zoom;
@@ -67,7 +67,7 @@ export function drawSnapGuides(
   ctx.save();
 
   // 1. Draw dashed guide lines
-  ctx.strokeStyle = '#6965db';
+  ctx.strokeStyle = '#007AFF';
   ctx.lineWidth = 1.5 / vp.zoom;
   ctx.setLineDash([4 / vp.zoom, 4 / vp.zoom]);
 
@@ -100,7 +100,7 @@ export function drawSnapGuides(
       ctx.arc(vpLeft, guide.position, dotRadius, 0, Math.PI * 2);
       ctx.arc(vpRight, guide.position, dotRadius, 0, Math.PI * 2);
     }
-    ctx.fillStyle = '#6965db';
+    ctx.fillStyle = '#007AFF';
     ctx.fill();
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 1 / vp.zoom;
@@ -108,7 +108,7 @@ export function drawSnapGuides(
   }
 
   // 3. Draw edge highlights on target elements
-  ctx.strokeStyle = '#6965db';
+  ctx.strokeStyle = '#007AFF';
   ctx.lineWidth = 2.5 / vp.zoom;
 
   for (const guide of guides) {
@@ -172,22 +172,22 @@ export function drawLassoHighlight(
 
   if (el.type === 'line' || el.type === 'arrow') {
     const bounds = getLinearBounds(el as LinearElement, sceneIndex);
-    ctx.fillStyle = 'rgba(105, 101, 219, 0.12)';
+    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
     ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    ctx.strokeStyle = 'rgba(105, 101, 219, 0.3)';
+    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
     ctx.lineWidth = 1 / vp.zoom;
     ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
   } else if (el.type === 'mindmap') {
     const bounds = getMindmapBounds(el as MindmapElement);
-    ctx.fillStyle = 'rgba(105, 101, 219, 0.12)';
+    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
     ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    ctx.strokeStyle = 'rgba(105, 101, 219, 0.3)';
+    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
     ctx.lineWidth = 1 / vp.zoom;
     ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
   } else {
-    ctx.fillStyle = 'rgba(105, 101, 219, 0.12)';
+    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
     ctx.fillRect(el.x, el.y, el.width, el.height);
-    ctx.strokeStyle = 'rgba(105, 101, 219, 0.3)';
+    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
     ctx.lineWidth = 1 / vp.zoom;
     ctx.strokeRect(el.x, el.y, el.width, el.height);
   }

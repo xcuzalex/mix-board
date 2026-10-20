@@ -70,7 +70,7 @@ export function ContextMenu({
   return (
     <div
       ref={ref}
-      className="fixed bg-white dark:bg-[#23232a] rounded-lg shadow-xl border border-gray-200 dark:border-white/10 py-1 z-50 min-w-[180px]"
+      className="fixed bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-xl rounded-xl shadow-[0_1px_2px_rgba(0,0,0,0.08),0_12px_36px_rgba(0,0,0,0.16)] border border-black/[0.06] dark:border-white/10 py-1.5 z-50 min-w-[184px]"
       style={{ left: state.x, top: state.y }}
     >
       {hasSelection && (

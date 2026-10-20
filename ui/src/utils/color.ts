@@ -19,14 +19,15 @@ export const PRESET_COLORS = [
   'transparent',
 ];
 
-// Excalidraw-inspired palette: light, modern, violet accent.
+// Apple-inspired palette: neutral surfaces, system-blue accent.
+export const ACCENT = '#007AFF';
 export const THEME = {
-  primary: '#6965db',
+  primary: ACCENT,
   background: '#FFFFFF',
   surface: '#F5F6F7',
   border: '#E0E0E0',
   textPrimary: '#1B1B1F',
   textSecondary: '#646A73',
-  selected: '#6965db',
+  selected: ACCENT,
   hover: '#EEF0F5',
 };

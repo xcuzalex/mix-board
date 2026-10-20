@@ -115,7 +115,7 @@ export function PropertyPanel() {
   if (selectedIds.length === 0) {
     if (activeTool === 'freedraw') {
       return (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-56 bg-white/80 dark:bg-[#1c1c1e]/85 backdrop-blur-xl rounded-2xl shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] border border-black/[0.06] dark:border-white/10 p-3 z-10 flex flex-col gap-3">
           <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">画笔</div>
           <Section label="颜色">
             <div className="flex flex-wrap gap-1.5">
@@ -131,7 +131,7 @@ export function PropertyPanel() {
     }
     if (activeTool === 'highlighter') {
       return (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-56 bg-white/80 dark:bg-[#1c1c1e]/85 backdrop-blur-xl rounded-2xl shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] border border-black/[0.06] dark:border-white/10 p-3 z-10 flex flex-col gap-3">
           <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">荧光笔</div>
           <Section label="颜色">
             <div className="flex flex-wrap gap-1.5">
@@ -210,8 +210,8 @@ export function PropertyPanel() {
   };
 
   return (
-    <div className="absolute right-3 top-1/2 -translate-y-1/2 w-52 bg-white dark:bg-[#23232a] rounded-xl shadow-lg border border-gray-200 dark:border-white/10 p-3 z-10 flex flex-col gap-3 max-h-[80vh] overflow-y-auto">
-      <div className="text-xs font-medium text-gray-500 dark:text-slate-400 tracking-wide">属性</div>
+    <div className="absolute right-3 top-1/2 -translate-y-1/2 w-56 bg-white/80 dark:bg-[#1c1c1e]/85 backdrop-blur-xl rounded-2xl shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] border border-black/[0.06] dark:border-white/10 p-3 z-10 flex flex-col gap-3 max-h-[80vh] overflow-y-auto">
+      <div className="text-[15px] font-semibold tracking-tight text-slate-800 dark:text-slate-100">属性</div>
 
       {/* Highlighter color */}
       {isHighlighter && (
@@ -244,12 +244,14 @@ export function PropertyPanel() {
       {(isShape || isStickyNote) && (
         <Section label={isStickyNote ? '便签颜色' : '填充颜色'}>
           {isStickyNote ? (
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
               {(Object.keys(STICKY_NOTE_COLORS) as NoteColor[]).map((color) => (
                 <button
                   key={color}
-                  className={`w-6 h-6 rounded-md border-2 ${
-                    (first as any).noteColor === color ? 'border-blue-500' : 'border-gray-200 dark:border-white/10'
+                  className={`h-[22px] w-[22px] rounded-full transition ${
+                    (first as any).noteColor === color
+                      ? 'ring-2 ring-[#007aff] ring-offset-2 ring-offset-white dark:ring-offset-[#1c1c1e]'
+                      : 'ring-1 ring-black/10 hover:ring-black/25 dark:ring-white/15 dark:hover:ring-white/30'
                   }`}
                   style={{ backgroundColor: STICKY_NOTE_COLORS[color] }}
                   onClick={() => update({ noteColor: color } as any)}
@@ -639,8 +641,8 @@ export function PropertyPanel() {
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-xs text-gray-400 dark:text-slate-500">{label}</span>
+    <div className="flex flex-col gap-2">
+      <span className="text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">{label}</span>
       {children}
     </div>
   );
@@ -655,26 +657,46 @@ function ColorGrid({
   selected: string;
   onSelect: (color: string) => void;
 }) {
+  const customValue = /^#[0-9a-fA-F]{6}$/.test(selected) ? selected : '#000000';
   return (
-    <div className="flex flex-wrap gap-1">
-      {colors.map((color) => (
-        <button
-          key={color}
-          className={`w-5 h-5 rounded border-2 ${
-            selected === color ? 'border-blue-500' : 'border-gray-200 dark:border-white/10'
-          }`}
-          style={{
-            backgroundColor: color === 'transparent' ? '#fff' : color,
-            backgroundImage:
-              color === 'transparent'
+    <div className="flex flex-wrap items-center gap-1.5">
+      {colors.map((color) => {
+        const isSel = selected === color;
+        const transparent = color === 'transparent';
+        return (
+          <button
+            key={color}
+            className={`h-[22px] w-[22px] rounded-full transition ${
+              isSel
+                ? 'ring-2 ring-[#007aff] ring-offset-2 ring-offset-white dark:ring-offset-[#1c1c1e]'
+                : 'ring-1 ring-black/10 hover:ring-black/25 dark:ring-white/15 dark:hover:ring-white/30'
+            }`}
+            style={{
+              backgroundColor: transparent ? 'transparent' : color,
+              backgroundImage: transparent
                 ? 'linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%), linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%)'
                 : 'none',
-            backgroundSize: '6px 6px',
-            backgroundPosition: '0 0, 3px 3px',
-          }}
-          onClick={() => onSelect(color)}
+              backgroundSize: '8px 8px',
+              backgroundPosition: '0 0, 4px 4px',
+            }}
+            onClick={() => onSelect(color)}
+            title={transparent ? '透明' : color}
+          />
+        );
+      })}
+      {/* Custom color */}
+      <label
+        className="relative flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-full ring-1 ring-black/10 transition hover:ring-black/25 dark:ring-white/15 dark:hover:ring-white/30"
+        style={{ background: 'conic-gradient(from 0deg, #ff5f57, #febc2e, #28c840, #007aff, #af52de, #ff5f57)' }}
+        title="自定义颜色"
+      >
+        <input
+          type="color"
+          value={customValue}
+          onChange={(e) => onSelect(e.target.value)}
+          className="absolute inset-0 cursor-pointer opacity-0"
         />
-      ))}
+      </label>
     </div>
   );
 }
@@ -682,7 +704,7 @@ function ColorGrid({
 function AlignBtn({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
   return (
     <button
-      className="px-1 py-1 text-[10px] rounded text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/10 border border-gray-200 dark:border-white/10"
+      className="flex-1 rounded-lg py-1.5 text-[11px] text-slate-600 transition hover:bg-black/[0.05] hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10"
       title={title}
       onClick={onClick}
     >
@@ -707,7 +729,7 @@ function LabeledInput({
         type="number"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full px-1 py-0.5 text-xs border border-gray-200 dark:border-white/10 rounded"
+        className="w-full rounded-lg bg-black/[0.04] px-2 py-1 text-xs text-slate-700 outline-none focus:bg-black/[0.06] dark:bg-white/5 dark:text-slate-200"
       />
     </div>
   );
