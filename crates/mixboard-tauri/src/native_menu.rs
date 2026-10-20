@@ -47,12 +47,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let file_open = item(app, "file.open", "打开文件", Some("CmdOrCtrl+O"))?;
     let file_save = item(app, "file.save", "保存", Some("CmdOrCtrl+S"))?;
     let file_export = item(app, "file.export_png", "导出 PNG…", Some("CmdOrCtrl+Shift+E"))?;
+    let file_export_md = item(app, "file.export_md", "导出 Markdown…", Some("CmdOrCtrl+Shift+M"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
         .item(&file_new)
         .item(&file_open)
         .separator()
         .item(&file_save)
         .item(&file_export)
+        .item(&file_export_md)
         .build()?;
 
     let edit_undo = item(app, "edit.undo", "撤销", Some("CmdOrCtrl+Z"))?;
@@ -154,6 +156,7 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
             | "file.open"
             | "file.save"
             | "file.export_png"
+            | "file.export_md"
             | "edit.undo"
             | "edit.redo"
             | "edit.duplicate"

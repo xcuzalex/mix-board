@@ -5,7 +5,7 @@ import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
-import { exportCurrentBoardAsImage, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
+import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 
 const NATIVE_MENU_EVENT = 'mixboard-native-menu';
 
@@ -75,6 +75,9 @@ export function TopBar() {
           return;
         case 'file.export_png':
           await exportCurrentBoardAsImage();
+          return;
+        case 'file.export_md':
+          await exportCurrentBoardAsMarkdown();
           return;
         case 'edit.undo':
           flushPendingCanvasInteractionState();

@@ -51,6 +51,17 @@ export class TauriBridge implements PlatformBridge {
     return targetPath;
   }
 
+  async saveTextFile(data: string, defaultPath: string, filter: { name: string; extensions: string[] }): Promise<string | null> {
+    const targetPath = await save({
+      title: `导出 ${filter.name}`,
+      defaultPath,
+      filters: [filter],
+    });
+    if (!targetPath) return null;
+    await writeTextFile(targetPath, data);
+    return targetPath;
+  }
+
   isDesktop() { return true; }
   isWeb() { return false; }
 }

@@ -29,6 +29,13 @@ export interface LinkHit {
 type InlineRun = { text: string; bold: boolean; italic: boolean; code: boolean; link: boolean };
 
 const CODE_FAMILY = "'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace";
+
+/** Default font for note cards (hand-drawn, CJK falls back to the system font). */
+export const DEFAULT_NOTE_FONT = "'Kalam', 'Inter', system-ui, sans-serif";
+/** Smallest height a card shrinks to when auto-fitting its content. */
+export const MIN_CARD_HEIGHT = 96;
+/** Inner padding of sticky notes / cards. */
+export const CARD_PADDING = 12;
 const LINK_COLOR = '#007AFF';
 
 function tokenizeInline(text: string): InlineRun[] {
@@ -91,7 +98,7 @@ function parseBlocks(source: string, base: number): Block[] {
       const level = m[1].length;
       const size = base * (level === 1 ? 1.6 : level === 2 ? 1.32 : 1.14);
       blocks.push({ runs: tokenizeInline(m[2]), size, weight: 700, indent: 0, spacingBefore: base * 0.3 });
-    } else if ((m = line.match(/^\s*\[([ xX])\]\s+(.*)$/u))) {
+    } else if ((m = line.match(/^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.*)$/u))) {
       blocks.push({ runs: tokenizeInline(m[2]), size: base, weight: 400, marker: m[1] === ' ' ? 'todo' : 'done', indent: base * 1.3, spacingBefore: 0 });
     } else if ((m = line.match(/^\s*[-*]\s+(.*)$/u))) {
       blocks.push({ runs: tokenizeInline(m[1]), size: base, weight: 400, marker: 'bullet', indent: base * 1.1, spacingBefore: 0 });
@@ -104,12 +111,25 @@ function parseBlocks(source: string, base: number): Block[] {
   return blocks;
 }
 
-/** Draws Markdown and returns the total height used. Collects [[link]] hit regions when `hits` is given. */
-export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts: MarkdownOptions, hits?: LinkHit[]): number {
+/**
+ * Draws Markdown and returns the content size. Collects [[link]] hit regions
+ * when `hits` is given. With `measureOnly`, lays out without painting (used to
+ * auto-size cards and text to their content). Pass `width: Infinity` to
+ * disable wrapping.
+ */
+export function drawMarkdown(
+  ctx: CanvasRenderingContext2D,
+  source: string,
+  opts: MarkdownOptions & { measureOnly?: boolean },
+  hits?: LinkHit[],
+): { width: number; height: number } {
   const { x, width, fontSize, fontFamily, color } = opts;
+  const paint = !opts.measureOnly;
   const blocks = parseBlocks(source, fontSize);
   let y = opts.y;
+  let maxRight = x;
 
+  ctx.save();
   for (const block of blocks) {
     y += block.spacingBefore;
     const lineHeight = block.size * 1.45;
@@ -124,7 +144,9 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
 
     // Block marker (bullet / checkbox) on the first line.
     ctx.textBaseline = 'top';
-    if (block.marker === 'bullet') {
+    if (!paint) {
+      // Markers only affect indentation, already captured by `left`.
+    } else if (block.marker === 'bullet') {
       ctx.fillStyle = color;
       ctx.font = `${block.size}px ${fontFamily}`;
       ctx.fillText('•', x + block.size * 0.3, y);
@@ -151,7 +173,7 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
       }
     }
 
-    if (block.quote) {
+    if (block.quote && paint) {
       ctx.fillStyle = 'rgba(0,0,0,0.12)';
       ctx.fillRect(x, y, 2.5, lineHeight);
     }
@@ -165,15 +187,18 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
         y += lineHeight;
         cursorX = left;
       }
-      ctx.fillStyle = run.link
-        ? LINK_COLOR
-        : block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
-      ctx.textBaseline = 'top';
-      ctx.fillText(word, cursorX, y);
+      if (paint) {
+        ctx.fillStyle = run.link
+          ? LINK_COLOR
+          : block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
+        ctx.textBaseline = 'top';
+        ctx.fillText(word, cursorX, y);
+      }
       if (run.link && hits && word.trim()) {
         hits.push({ name: run.text, x: cursorX, y, w, h: block.size * 1.3 });
       }
       cursorX += w;
+      if (word.trim()) maxRight = Math.max(maxRight, cursorX);
     };
 
     for (const run of block.runs) {
@@ -186,6 +211,18 @@ export function drawMarkdown(ctx: CanvasRenderingContext2D, source: string, opts
     }
     y += lineHeight;
   }
+  ctx.restore();
 
-  return y - opts.y;
+  return { width: maxRight - x, height: y - opts.y };
+}
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+/** Measures Markdown content size on a shared offscreen context (no painting). */
+export function measureMarkdown(source: string, opts: Omit<MarkdownOptions, 'x' | 'y' | 'color'>): { width: number; height: number } {
+  if (!measureCtx) {
+    measureCtx = document.createElement('canvas').getContext('2d');
+  }
+  if (!measureCtx) return { width: 0, height: 0 };
+  return drawMarkdown(measureCtx, source, { ...opts, x: 0, y: 0, color: '#000', measureOnly: true });
 }

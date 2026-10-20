@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { Renderer } from './renderer';
@@ -23,7 +23,8 @@ import {
   moveMindmapNode,
 } from './mindmap-ops';
 import { useCanvasShortcuts } from './useCanvasShortcuts';
-import { buildLinkIndex } from '../utils/links';
+import { buildLinkIndex, getNoteTitle } from '../utils/links';
+import { measureMarkdown, CARD_PADDING, DEFAULT_NOTE_FONT, MIN_CARD_HEIGHT } from './render/markdown';
 import { getEditableDraft, computeEditingPosition } from './text-editing';
 import { canvasTheme, isDefaultBackground, setCanvasTheme } from './canvas-theme';
 import {
@@ -189,6 +190,8 @@ export function Canvas() {
   const [hoveredConnectableId, setHoveredConnectableId] = useState<string | null>(null);
   const [hoveredConnectionElementId, setHoveredConnectionElementId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  // Active "[[" autocomplete while editing text: where the "[[" starts, the typed query, highlighted row.
+  const [linkSuggest, setLinkSuggest] = useState<{ start: number; query: string; index: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Context menu state
@@ -581,19 +584,31 @@ export function Canvas() {
       pushHistory();
       const isContainer = editingElement.type === 'section' || editingElement.type === 'frame';
       if (editingElement.type === 'sticky_note') {
+        // Cards fit their height to the rendered Markdown content.
         const sticky = editingElement as StickyNoteElement;
         const fontSize = sticky.fontSize || 16;
-        const padding = 12;
-        const lineHeight = fontSize * 1.4;
-        const approximateCharsPerLine = Math.max(1, Math.floor((sticky.width - padding * 2) / (fontSize * 0.55)));
-        const lines = editText.split('\n').flatMap((line) => {
-          if (line.length === 0) return [''];
-          const count = Math.ceil(line.length / approximateCharsPerLine);
-          if (count <= 1) return [line];
-          return Array.from({ length: count }, (_, i) => line.slice(i * approximateCharsPerLine, (i + 1) * approximateCharsPerLine));
+        const { height: contentHeight } = measureMarkdown(editText, {
+          width: sticky.width - CARD_PADDING * 2,
+          fontSize,
+          fontFamily: (sticky as any).fontFamily ?? DEFAULT_NOTE_FONT,
         });
-        const newHeight = Math.max(sticky.height, padding * 2 + lines.length * lineHeight);
+        const newHeight = Math.max(MIN_CARD_HEIGHT, Math.ceil(contentHeight + CARD_PADDING * 2));
         updateElement(sticky.id, { text: editText, fontSize, height: newHeight } as any);
+      } else if (editingElement.type === 'text' && ((editingElement as any).textAlign ?? 'left') === 'left') {
+        // Left-aligned text renders as unwrapped Markdown; fit its bounds to the content.
+        const textEl = editingElement as any;
+        const fontSize = textEl.fontSize || 16;
+        const size = measureMarkdown(editText, {
+          width: Infinity,
+          fontSize,
+          fontFamily: textEl.fontFamily ?? DEFAULT_NOTE_FONT,
+        });
+        updateElement(textEl.id, {
+          text: editText,
+          fontSize,
+          width: Math.max(40, Math.ceil(size.width) + 4),
+          height: Math.max(Math.ceil(fontSize * 1.3), Math.ceil(size.height)),
+        } as any);
       } else {
         updateElement(editingElement.id, (isContainer ? { title: editText } : { text: editText, fontSize: (editingElement as any).fontSize || 16 }) as any);
       }
@@ -1204,6 +1219,11 @@ export function Canvas() {
       }
     }
 
+    // Hovering a rendered [[link]] (select tool, idle) shows a pointer cursor.
+    const overLink = activeTool === 'select'
+      && actionRef.current === 'none'
+      && !!sceneRendererRef.current?.getLinkAtPoint(canvasPos.x, canvasPos.y);
+
     // Show connection points when hovering near a selected element's edge (select tool, idle)
     if (activeTool === 'select' && actionRef.current === 'none' && selectedIds.length >= 1) {
       let foundConnectionEl: string | null = null;
@@ -1235,7 +1255,7 @@ export function Canvas() {
           default: wantCursor = 'default';
         }
       } else {
-        wantCursor = foundConnectionEl ? 'crosshair' : 'default';
+        wantCursor = foundConnectionEl ? 'crosshair' : overLink ? 'pointer' : 'default';
       }
       if (wantCursor !== cursorRef.current) {
         setCursorStyle(wantCursor);
@@ -1245,6 +1265,12 @@ export function Canvas() {
       if (cursorRef.current === 'crosshair') setCursorStyle('default');
       if (activeTool === 'select' && syncHoveredAnchor(null)) {
         invalidateOverlay();
+      }
+    } else if (activeTool === 'select' && actionRef.current === 'none') {
+      // Nothing selected: only toggle between the link pointer and the default cursor.
+      const wantCursor = overLink ? 'pointer' : 'default';
+      if (wantCursor !== cursorRef.current && (cursorRef.current === 'pointer' || cursorRef.current === 'default')) {
+        setCursorStyle(wantCursor);
       }
     }
 
@@ -1744,6 +1770,69 @@ export function Canvas() {
     renderer: sceneRendererRef.current,
   });
 
+  // --- "[[" link autocomplete while editing ---
+  const editingOwnerId = editingElement?.id ?? editingMindmapNode?.elementId ?? null;
+  const noteTitles = useMemo(() => {
+    const seen = new Set<string>();
+    const titles: string[] = [];
+    for (const el of elements) {
+      if (el.id === editingOwnerId) continue;
+      const title = getNoteTitle(el);
+      if (title && !seen.has(title)) {
+        seen.add(title);
+        titles.push(title);
+      }
+    }
+    return titles;
+  }, [elements, editingOwnerId]);
+
+  const linkSuggestions = linkSuggest
+    ? noteTitles.filter((t) => t.toLowerCase().includes(linkSuggest.query.toLowerCase())).slice(0, 8)
+    : [];
+  const activeSuggestion = linkSuggest ? Math.min(linkSuggest.index, linkSuggestions.length - 1) : 0;
+
+  const updateLinkSuggest = (value: string, caret: number) => {
+    // Query = text after the LAST unclosed "[[" before the caret (no "]", newline or nested "[[").
+    const match = value.slice(0, caret).match(/\[\[((?:(?!\[\[)[^\]\n])*)$/u);
+    if (!match) {
+      setLinkSuggest(null);
+      return;
+    }
+    const start = caret - match[1].length - 2;
+    setLinkSuggest((prev) => ({ start, query: match[1], index: prev && prev.start === start ? prev.index : 0 }));
+  };
+
+  const acceptLink = (title: string) => {
+    const ta = textareaRef.current;
+    if (!ta || !linkSuggest) return;
+    const value = ta.value;
+    const caret = ta.selectionStart ?? value.length;
+    const before = value.slice(0, linkSuggest.start);
+    let after = value.slice(caret);
+    if (after.startsWith(']]')) after = after.slice(2);
+    const insert = `[[${title}]]`;
+    setEditText(before + insert + after);
+    setLinkSuggest(null);
+    const pos = before.length + insert.length;
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+    });
+  };
+
+  // Close the autocomplete when editing ends.
+  useEffect(() => {
+    if (!editingElement && !editingMindmapNode) setLinkSuggest(null);
+  }, [editingElement, editingMindmapNode]);
+
+  // Grow the editor textarea with its content while typing.
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.max(editPos.height, ta.scrollHeight)}px`;
+  }, [editText, editPos.height, editingElement, editingMindmapNode]);
+
   return (
     <div className="absolute inset-0">
       <canvas
@@ -1768,42 +1857,90 @@ export function Canvas() {
 
       {/* Text editing overlay */}
       {(editingElement || editingMindmapNode) && (
-        <textarea
-          ref={textareaRef}
-          className={`absolute resize-none overflow-hidden outline-none ${
-            editPos.chrome === 'plain'
-              ? 'border-0 bg-transparent shadow-none'
-              : editingMindmapNode
-                ? 'border border-emerald-200/90 bg-white/70 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
-                : 'border border-blue-300/90 bg-white/80 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
-          }`}
-          style={{
-            left: editPos.left,
-            top: editPos.top,
-            width: editPos.width,
-            height: editPos.height,
-            minHeight: editPos.height,
-            fontSize: `${editPos.fontSize}px`,
-            fontFamily: editPos.fontFamily,
-            color: editPos.color,
-            padding: editPos.padding,
-            textAlign: (editPos as any).textAlign ?? 'left',
-            lineHeight: 1.3,
-            backgroundColor: (editPos as any).backgroundColor,
-            borderRadius: `${(editPos as any).borderRadius ?? 0}px`,
-            zIndex: 20,
-          }}
-          value={editText}
-          onChange={(e) => setEditText(e.target.value)}
-          onBlur={finishEditing}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              finishEditing();
-              e.preventDefault();
-            }
-            e.stopPropagation();
-          }}
-        />
+        <div className="absolute" style={{ left: editPos.left, top: editPos.top, zIndex: 20 }}>
+          <textarea
+            ref={textareaRef}
+            className={`block resize-none overflow-hidden outline-none ${
+              editPos.chrome === 'plain'
+                ? 'border-0 bg-transparent shadow-none'
+                : editingMindmapNode
+                  ? 'border border-emerald-200/90 bg-white/70 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
+                  : 'border border-blue-300/90 bg-white/80 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
+            }`}
+            style={{
+              width: editPos.width,
+              minHeight: editPos.height,
+              fontSize: `${editPos.fontSize}px`,
+              fontFamily: editPos.fontFamily,
+              color: editPos.color,
+              padding: editPos.padding,
+              textAlign: (editPos as any).textAlign ?? 'left',
+              lineHeight: 1.3,
+              backgroundColor: (editPos as any).backgroundColor,
+              borderRadius: `${(editPos as any).borderRadius ?? 0}px`,
+            }}
+            value={editText}
+            onChange={(e) => {
+              setEditText(e.target.value);
+              updateLinkSuggest(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) => updateLinkSuggest(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
+            onBlur={finishEditing}
+            onKeyDown={(e) => {
+              if (linkSuggest && linkSuggestions.length > 0) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const delta = e.key === 'ArrowDown' ? 1 : -1;
+                  const count = linkSuggestions.length;
+                  setLinkSuggest((prev) => prev && { ...prev, index: (Math.min(prev.index, count - 1) + delta + count) % count });
+                  return;
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  acceptLink(linkSuggestions[activeSuggestion]);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setLinkSuggest(null);
+                  return;
+                }
+              }
+              if (e.key === 'Escape') {
+                finishEditing();
+                e.preventDefault();
+              }
+              e.stopPropagation();
+            }}
+          />
+
+          {linkSuggest && linkSuggestions.length > 0 && (
+            <div className="absolute left-0 top-full mt-1.5 w-56 overflow-hidden rounded-xl border border-black/[0.06] bg-white/90 py-1 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/90">
+              <div className="px-3 pb-1 pt-1 text-[11px] font-medium tracking-wide text-slate-400 dark:text-slate-500">链接到笔记</div>
+              {linkSuggestions.map((title, i) => (
+                <button
+                  key={title}
+                  type="button"
+                  className={`flex w-full items-center px-3 py-1.5 text-left text-[13px] ${
+                    i === activeSuggestion
+                      ? 'bg-[#007aff] text-white'
+                      : 'text-slate-700 hover:bg-black/[0.04] dark:text-slate-200 dark:hover:bg-white/10'
+                  }`}
+                  // mousedown + preventDefault keeps the textarea focused (no blur → finishEditing).
+                  onMouseDown={(ev) => {
+                    ev.preventDefault();
+                    acceptLink(title);
+                  }}
+                >
+                  <span className="truncate">{title}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Size display during resize */}

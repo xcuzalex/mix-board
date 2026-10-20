@@ -23,7 +23,7 @@ import {
   type GetShapePath,
 } from './render/shapes';
 import { drawLinear } from './render/linear';
-import { drawMarkdown, type LinkHit } from './render/markdown';
+import { drawMarkdown, CARD_PADDING, DEFAULT_NOTE_FONT, type LinkHit } from './render/markdown';
 import {
   type Rect,
   getMindmapLayoutSignature,
@@ -867,6 +867,22 @@ export class Renderer {
     if (this.editingElementId === el.id) return;
     const ctx = this.ctx;
 
+    // Left-aligned text renders as Markdown (no wrapping — authored lines are
+    // kept). Centered / right-aligned text keeps the plain renderer.
+    if ((el.textAlign ?? 'left') === 'left') {
+      const hits: LinkHit[] = [];
+      drawMarkdown(ctx, el.text, {
+        x: el.x,
+        y: el.y,
+        width: Infinity,
+        fontSize: el.fontSize,
+        fontFamily: el.fontFamily,
+        color: el.strokeColor,
+      }, hits);
+      for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
+      return;
+    }
+
     ctx.fillStyle = el.strokeColor;
     ctx.font = `${el.fontSize}px ${el.fontFamily}`;
     ctx.textAlign = el.textAlign;
@@ -938,14 +954,13 @@ export class Renderer {
     // Markdown content (skip if being edited - textarea overlay handles it)
     if (el.text && this.editingElementId !== el.id) {
       ctx.textAlign = 'left';
-      const padding = 12;
       const hits: LinkHit[] = [];
       drawMarkdown(ctx, el.text, {
-        x: el.x + padding,
-        y: el.y + padding,
-        width: el.width - padding * 2,
+        x: el.x + CARD_PADDING,
+        y: el.y + CARD_PADDING,
+        width: el.width - CARD_PADDING * 2,
         fontSize: el.fontSize ?? 16,
-        fontFamily: el.fontFamily ?? "'Kalam', 'Inter', system-ui, sans-serif",
+        fontFamily: el.fontFamily ?? DEFAULT_NOTE_FONT,
         color: '#1B1B1F',
       }, hits);
       for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });

@@ -11,6 +11,7 @@ import {
   getMindmapSiblings,
 } from '../canvas/mindmap-ops';
 import { buildLinkIndex, getNoteTitle } from '../utils/links';
+import { exportCurrentBoardAsMarkdown } from '../utils/document-io';
 import type { Element, MindmapElement, MindmapNode } from '../types/element';
 
 /**
@@ -181,6 +182,17 @@ export function OutlinePanel() {
     <div className="absolute left-3 top-4 bottom-4 z-40 flex w-72 flex-col overflow-hidden rounded-[20px] border border-black/[0.06] bg-white/75 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/80">
       <div className="flex items-center justify-between border-b border-black/[0.06] px-4 py-3 dark:border-white/10">
         <div className="text-[15px] font-semibold tracking-tight text-slate-800 dark:text-slate-100">大纲</div>
+        <div className="flex items-center gap-0.5">
+        <button
+          className="rounded-full p-1 text-slate-400 transition hover:bg-black/[0.05] hover:text-[#007aff] dark:hover:bg-white/10"
+          onClick={() => void exportCurrentBoardAsMarkdown()}
+          title="导出为 Markdown 文档"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 4v11M7.5 10.5L12 15l4.5-4.5" />
+            <path d="M5 19h14" />
+          </svg>
+        </button>
         <button
           className="rounded-full p-1 text-slate-400 transition hover:bg-black/[0.05] hover:text-slate-600 dark:hover:bg-white/10 dark:hover:text-slate-200"
           onClick={toggleOutline}
@@ -190,6 +202,7 @@ export function OutlinePanel() {
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
         </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 py-2">

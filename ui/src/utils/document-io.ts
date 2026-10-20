@@ -6,6 +6,7 @@ import { useDocumentStore } from '../store/document';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element, LinearElement } from '../types/element';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
+import { boardToMarkdown } from './markdown-export';
 
 const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
 const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
@@ -114,6 +115,17 @@ export async function saveCurrentDocument() {
   }
 
   return path;
+}
+
+/** Exports the board's notes as a Markdown document (reading order). */
+export async function exportCurrentBoardAsMarkdown() {
+  flushPendingCanvasInteractionState();
+  const { elements, filePath } = useDocumentStore.getState();
+  const title = getDocumentDisplayName(filePath);
+  const markdown = boardToMarkdown(elements, title);
+  const suggested = filePath && /\.[^.]+$/u.test(filePath) ? replaceExtension(filePath, '.md') : `${title}.md`;
+  const platform = await getPlatform();
+  return platform.saveTextFile(markdown, suggested, { name: 'Markdown', extensions: ['md'] });
 }
 
 export async function exportCurrentBoardAsImage() {

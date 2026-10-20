@@ -60,6 +60,12 @@ export class WebBridge implements PlatformBridge {
     return fileName;
   }
 
+  async saveTextFile(data: string, defaultPath: string, _filter: { name: string; extensions: string[] }): Promise<string | null> {
+    const fileName = getDownloadFileName(defaultPath, 'mixboard.md');
+    downloadBlob(new Blob([data], { type: 'text/markdown;charset=utf-8' }), fileName);
+    return fileName;
+  }
+
   isDesktop() { return false; }
   isWeb() { return true; }
 }
