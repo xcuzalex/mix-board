@@ -14,7 +14,6 @@
     "fs:allow-write-file",
     "fs:allow-write-text-file",
     "fs:allow-exists",
-    "fs:allow-mkdir",
-    "shell:allow-open"
+    "fs:allow-mkdir"
   ]
 }
