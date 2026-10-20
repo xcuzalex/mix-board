@@ -11,7 +11,58 @@
 import type { Element, MindmapElement, MindmapNode } from '../../types/element';
 import { THEME } from '../../utils/color';
 import type { SceneIndex } from '../linear';
-import { type Rect, type MeasureNode, layoutMindmapNodes } from './mindmap-layout';
+import { type Rect, type MeasureNode, layoutMindmapNodes, mindmapNodeFont } from './mindmap-layout';
+import { canvasTheme } from '../canvas-theme';
+
+// --- Branch styling ---------------------------------------------------------
+// Each first-level branch (and its whole subtree) gets one color from this
+// palette, used for its connectors, card border/tint and count badges.
+const BRANCH_PALETTE = ['#2D6EA6', '#B5651D', '#6B4FBB', '#2E7D4F', '#A23B5E', '#1F8A8A', '#A97A10', '#5B6B8C'];
+
+// Creation defaults. Nodes / lines still on these follow the automatic branch
+// palette; anything the user explicitly recolored is respected as-is.
+const DEFAULT_ROOT_BG = '#2F6B55';
+const DEFAULT_NODE_BG = '#E7F5EE';
+const DEFAULT_NODE_TEXT = '#234032';
+const DEFAULT_LINE = '#7AA692';
+const ROOT_FILL = '#1E3A32';
+
+const isAutoColor = (value: string | undefined, fallback: string) =>
+  !value || value.toLowerCase() === fallback.toLowerCase();
+
+function childrenOf(node: MindmapNode): MindmapNode[] {
+  return [...node.children, ...(node.leftChildren ?? []), ...(node.rightChildren ?? [])];
+}
+
+const branchColorCache = new WeakMap<MindmapNode, Map<string, string>>();
+
+/** node id -> branch color (root tree objects are immutable, so cache by identity). */
+function getBranchColors(root: MindmapNode): Map<string, string> {
+  const cached = branchColorCache.get(root);
+  if (cached) return cached;
+  const colors = new Map<string, string>();
+  const paint = (node: MindmapNode, color: string) => {
+    colors.set(node.id, color);
+    for (const child of childrenOf(node)) paint(child, color);
+  };
+  childrenOf(root).forEach((child, i) => paint(child, BRANCH_PALETTE[i % BRANCH_PALETTE.length]));
+  branchColorCache.set(root, colors);
+  return colors;
+}
+
+function countDescendants(node: MindmapNode): number {
+  let count = 0;
+  for (const child of childrenOf(node)) count += 1 + countDescendants(child);
+  return count;
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 type MindmapNodeRef = { elementId: string; nodeId: string };
 
@@ -56,8 +107,9 @@ function drawMindmapConnections(deps: MindmapDrawDeps, el: MindmapElement, node:
   const ctx = deps.ctx;
   const nr = getNodeRect(layout, node, el.x, el.y);
 
-  const style = el.lineStyle || { color: '#8B8FA3', width: 2, style: 'solid' as const };
-  ctx.strokeStyle = style.color;
+  const style = el.lineStyle || { color: DEFAULT_LINE, width: 2.5, style: 'solid' as const };
+  const autoLine = isAutoColor(style.color, DEFAULT_LINE);
+  const branchColors = getBranchColors(el.rootNode);
   ctx.lineWidth = style.width;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -76,6 +128,7 @@ function drawMindmapConnections(deps: MindmapDrawDeps, el: MindmapElement, node:
   ].filter((child) => !isDragged(deps, el.id, child.id));
 
   for (const child of allChildren) {
+    ctx.strokeStyle = autoLine ? (branchColors.get(child.id) ?? style.color) : style.color;
     const cr = getNodeRect(layout, child, 0, 0);
     const isLeft = cr.x + cr.w < nr.x;
     const isDown = el.layout === 'tree_down';
@@ -132,26 +185,52 @@ function drawMindmapNode(deps: MindmapDrawDeps, el: MindmapElement, node: Mindma
     && deps.mindmapDropTarget?.elementId === el.id
     && deps.mindmapDropTarget.nodeId === node.id;
 
+  const isRoot = node.id === el.rootNode.id;
+  const branchColor = getBranchColors(el.rootNode).get(node.id) ?? BRANCH_PALETTE[0];
+  const autoFill = isRoot
+    ? isAutoColor(node.backgroundColor, DEFAULT_ROOT_BG)
+    : isAutoColor(node.backgroundColor, DEFAULT_NODE_BG);
+
   if (node.nodeShape !== 'text') {
     ctx.save();
-    ctx.shadowColor = node.nodeType === 'root' ? 'rgba(47, 107, 85, 0.18)' : 'rgba(15, 23, 42, 0.08)';
-    ctx.shadowBlur = node.nodeType === 'root' ? 18 : 10;
-    ctx.shadowOffsetY = 4;
+    const radius = node.nodeShape === 'pill' ? h / 2 : isRoot ? 12 : 10;
     ctx.beginPath();
-    const radius = node.nodeShape === 'pill' ? h / 2 : 6;
     ctx.roundRect(x, y, w, h, radius);
-    ctx.fillStyle = node.backgroundColor || (node.nodeType === 'root' ? '#3370FF' : '#E3EAFD');
-    ctx.fill();
-    ctx.shadowColor = 'transparent';
-    ctx.strokeStyle = node.nodeType === 'root' ? 'rgba(0, 0, 0, 0.04)' : (node.backgroundColor || '#3370FF');
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    if (isRoot) {
+      // Dark, solid root card.
+      ctx.shadowColor = 'rgba(15, 23, 42, 0.18)';
+      ctx.shadowBlur = 16;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = autoFill ? ROOT_FILL : node.backgroundColor;
+      ctx.fill();
+    } else if (autoFill) {
+      // Branch card: opaque base + light tint of the branch color + colored border.
+      ctx.fillStyle = canvasTheme.background;
+      ctx.fill();
+      ctx.fillStyle = withAlpha(branchColor, 0.12);
+      ctx.fill();
+      ctx.strokeStyle = branchColor;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      // User-chosen colors.
+      ctx.fillStyle = node.backgroundColor;
+      ctx.fill();
+      ctx.strokeStyle = node.backgroundColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
   if (deps.editingMindmapNodeId !== node.id) {
-    ctx.fillStyle = node.textColor || (node.nodeType === 'root' && node.nodeShape !== 'text' ? '#FFFFFF' : '#1B1B1F');
-    ctx.font = `${node.fontSize}px Inter, system-ui, sans-serif`;
+    const autoText = isRoot
+      ? !node.textColor || node.textColor.toLowerCase() === '#ffffff'
+      : isAutoColor(node.textColor, DEFAULT_NODE_TEXT);
+    ctx.fillStyle = isRoot
+      ? (autoText && node.nodeShape !== 'text' ? '#FFFFFF' : node.textColor || canvasTheme.foreground)
+      : (autoText ? canvasTheme.foreground : node.textColor);
+    ctx.font = mindmapNodeFont(node);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(node.text || '主题', x + w / 2, y + h / 2, w - 8);
@@ -189,18 +268,32 @@ function drawMindmapNode(deps: MindmapDrawDeps, el: MindmapElement, node: Mindma
     ctx.restore();
   }
 
-  // Collapse indicator
-  const allChildCount = node.children.length + (node.leftChildren?.length || 0) + (node.rightChildren?.length || 0);
-  if (allChildCount > 0 && node.collapsed) {
-    const ix = x + w + 4;
-    const iy = y + h / 2;
-    ctx.fillStyle = '#8B8FA3';
+  // Count badge on the outer edge: how many topics sit under this node.
+  // Solid when collapsed (children hidden), outlined when expanded.
+  const descendants = isRoot ? 0 : countDescendants(node);
+  if (descendants > 0) {
+    const rootRect = layout.get(el.rootNode.id);
+    const isDown = el.layout === 'tree_down';
+    const onLeft = !isDown && !!rootRect && x + w / 2 < rootRect.x + rootRect.w / 2;
+    const bx = isDown ? x + w / 2 : onLeft ? x : x + w;
+    const by = isDown ? y + h : y + h / 2;
+    const color = autoFill ? branchColor : '#8B8FA3';
+    const label = String(descendants);
+    ctx.save();
+    ctx.font = '700 10px Inter, system-ui, sans-serif';
+    const r = Math.max(9, ctx.measureText(label).width / 2 + 4);
     ctx.beginPath();
-    ctx.arc(ix, iy, 6, 0, Math.PI * 2);
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.fillStyle = node.collapsed ? color : canvasTheme.background;
     ctx.fill();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '10px Inter, system-ui, sans-serif';
-    ctx.fillText('+', ix, iy + 1);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ctx.fillStyle = node.collapsed ? '#FFFFFF' : color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, bx, by + 0.5);
+    ctx.restore();
   }
 
   const allChildren = [

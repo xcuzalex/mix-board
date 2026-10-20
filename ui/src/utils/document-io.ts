@@ -4,9 +4,10 @@ import { Viewport } from '../canvas/viewport';
 import { getPlatform } from '../platform';
 import { useDocumentStore } from '../store/document';
 import type { AppState, EmbeddedFile } from '../types/document';
-import type { Element, LinearElement } from '../types/element';
+import type { Element, LinearElement, MindmapElement } from '../types/element';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
+import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
 
 const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
 const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
@@ -14,6 +15,17 @@ const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
 function getElementBounds(element: Element, elements: Element[]) {
   if (element.type === 'line' || element.type === 'arrow') {
     return getLinearBounds(element as LinearElement, elements);
+  }
+  if (element.type === 'mindmap') {
+    // A mindmap's declared box doesn't reflect its laid-out tree; measure the real layout.
+    const ctx = document.createElement('canvas').getContext('2d');
+    const bounds = ctx
+      ? getLayoutBounds(layoutMindmapNodes(element as MindmapElement, (n) => measureMindmapNodeWith(ctx, n)))
+      : null;
+    if (bounds) {
+      // Leave room for the count badges drawn on node edges.
+      return { x: bounds.x - 12, y: bounds.y - 12, width: bounds.width + 24, height: bounds.height + 24 };
+    }
   }
 
   return {
@@ -90,8 +102,11 @@ function createExportCanvas(elements: Element[], backgroundColor: string) {
   const viewport = new Viewport();
   viewport.update(padding - minX, padding - minY, 1);
   const renderer = new Renderer(ctx, viewport);
+  renderer.backgroundDots = false;
   renderer.setSize(width, height);
-  renderer.render(elements, [], backgroundColor, false, 20);
+  // Scene layer only: render() would also run the overlay pass, which clears
+  // the same canvas to transparent (the live app uses two canvases).
+  renderer.renderSceneLayer(elements, backgroundColor, false, 20);
 
   return canvas;
 }

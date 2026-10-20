@@ -19,11 +19,13 @@ interface CanvasThemeColors {
   grid: string;
   /** Default foreground (text / freedraw) for newly created elements. */
   foreground: string;
+  /** Dot-grid backdrop color. */
+  dot: string;
 }
 
 const THEMES: Record<EffectiveTheme, CanvasThemeColors> = {
-  light: { background: '#ffffff', grid: '#E8E8E8', foreground: '#1B1B1F' },
-  dark: { background: '#1b1b1f', grid: '#2e2e36', foreground: '#E6E6EA' },
+  light: { background: '#ffffff', grid: '#E8E8E8', foreground: '#1B1B1F', dot: 'rgba(30, 41, 59, 0.24)' },
+  dark: { background: '#1b1b1f', grid: '#2e2e36', foreground: '#E6E6EA', dot: 'rgba(255, 255, 255, 0.14)' },
 };
 
 export const canvasTheme: CanvasThemeColors = { ...THEMES.light };

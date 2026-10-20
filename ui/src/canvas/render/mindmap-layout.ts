@@ -14,6 +14,41 @@ export type Rect = { x: number; y: number; w: number; h: number };
 /** Measures a node's rendered box. Injected by the Renderer (ctx.measureText + cache). */
 export type MeasureNode = (node: MindmapNode) => { w: number; h: number };
 
+const MINDMAP_FONT_FAMILY = 'Inter, system-ui, sans-serif';
+
+/** Font used to draw (and measure) a mindmap node's title. */
+export function mindmapNodeFont(node: MindmapNode): string {
+  return `${node.nodeType === 'root' ? 700 : 600} ${node.fontSize}px ${MINDMAP_FONT_FAMILY}`;
+}
+
+/** Node box size for a given 2D context (shared by the renderer and UI fit-to-screen). */
+export function measureMindmapNodeWith(ctx: CanvasRenderingContext2D, node: MindmapNode): { w: number; h: number } {
+  ctx.font = mindmapNodeFont(node);
+  const textWidth = ctx.measureText(node.text || '主题').width;
+  const isText = node.nodeShape === 'text';
+  const padding = isText ? 8 : 22;
+  return {
+    w: Math.max(textWidth + padding * 2, 64),
+    h: node.fontSize * 1.5 + (isText ? 4 : 18),
+  };
+}
+
+/** Bounding box of a computed layout. */
+export function getLayoutBounds(layout: Map<string, Rect>): { x: number; y: number; width: number; height: number } | null {
+  if (layout.size === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const r of layout.values()) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.w);
+    maxY = Math.max(maxY, r.y + r.h);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
 /** Structural signature used to invalidate the layout cache when the tree changes. */
 export function getMindmapLayoutSignature(el: MindmapElement): string {
   const visit = (node: MindmapNode): string => {

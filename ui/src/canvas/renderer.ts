@@ -28,9 +28,11 @@ import {
   type Rect,
   getMindmapLayoutSignature,
   layoutMindmapNodes,
+  measureMindmapNodeWith,
 } from './render/mindmap-layout';
 import {
   drawGrid,
+  drawDotGrid,
   drawSelectionRect,
   drawSnapGuides,
   drawLassoHighlight,
@@ -158,6 +160,8 @@ export class Renderer {
   private rough: RoughCanvas;
   /** [[link]] hit regions collected during the scene pass, in canvas coords. */
   private linkHits: Array<{ elementId: string } & LinkHit> = [];
+  /** Draw the dot-grid backdrop behind the scene (off for image export). */
+  backgroundDots = true;
 
   constructor(ctx: CanvasRenderingContext2D, viewport: Viewport) {
     this.ctx = ctx;
@@ -433,13 +437,7 @@ export class Renderer {
     const cached = this.mindmapNodeMeasureCache.get(key);
     if (cached) return cached;
 
-    this.ctx.font = `${node.fontSize}px Inter, system-ui, sans-serif`;
-    const textWidth = this.ctx.measureText(node.text || '主题').width;
-    const padding = node.nodeShape === 'text' ? 8 : 20;
-    const size = {
-      w: Math.max(textWidth + padding * 2, 60),
-      h: node.fontSize * 1.5 + (node.nodeShape === 'text' ? 4 : 16),
-    };
+    const size = measureMindmapNodeWith(this.ctx, node);
     this.mindmapNodeMeasureCache.set(key, size);
     this.trimCache(this.mindmapNodeMeasureCache, 2000);
     return size;
@@ -491,6 +489,8 @@ export class Renderer {
 
     if (showGrid) {
       this.renderGrid(gridSize);
+    } else if (this.backgroundDots) {
+      drawDotGrid(this.ctx, this.viewport, this.width, this.height);
     }
 
     const vpRect = this.getExpandedViewportRect();

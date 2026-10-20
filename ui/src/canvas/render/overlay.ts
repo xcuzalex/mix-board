@@ -43,6 +43,40 @@ export function drawGrid(
   ctx.stroke();
 }
 
+/**
+ * Dot-grid backdrop: small round dots on a regular lattice. Spacing doubles
+ * when zoomed out so the screen never gets denser than ~12px between dots, and
+ * dot size stays ~constant on screen. All dots go into one path, filled once.
+ */
+export function drawDotGrid(
+  ctx: CanvasRenderingContext2D,
+  vp: Viewport,
+  width: number,
+  height: number,
+  baseSpacing = 24,
+) {
+  let spacing = baseSpacing;
+  while (spacing * vp.zoom < 12) spacing *= 2;
+
+  const radius = 1.1 / vp.zoom;
+  const startX = Math.floor(-vp.x / vp.zoom / spacing) * spacing;
+  const startY = Math.floor(-vp.y / vp.zoom / spacing) * spacing;
+  const endX = startX + width / vp.zoom + spacing;
+  const endY = startY + height / vp.zoom + spacing;
+
+  ctx.save();
+  ctx.fillStyle = canvasTheme.dot;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += spacing) {
+    for (let y = startY; y <= endY; y += spacing) {
+      ctx.moveTo(x + radius, y);
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+    }
+  }
+  ctx.fill();
+  ctx.restore();
+}
+
 export function drawSelectionRect(ctx: CanvasRenderingContext2D, box: Box, zoom: number) {
   ctx.save();
   ctx.fillStyle = 'rgba(0, 122, 255, 0.08)';

@@ -61,6 +61,21 @@ export function findMindmapParent(root: MindmapNode, nodeId: string): MindmapNod
   return null;
 }
 
+/** Returns a new tree with `patch(node, depth)` merged into every node (root depth = 0). */
+export function mapMindmapTree(
+  root: MindmapNode,
+  patch: (node: MindmapNode, depth: number) => Partial<MindmapNode> | null,
+): MindmapNode {
+  const walk = (node: MindmapNode, depth: number): MindmapNode => ({
+    ...node,
+    ...(patch(node, depth) ?? {}),
+    children: node.children.map((c) => walk(c, depth + 1)),
+    leftChildren: (node.leftChildren || []).map((c) => walk(c, depth + 1)),
+    rightChildren: (node.rightChildren || []).map((c) => walk(c, depth + 1)),
+  });
+  return walk(root, 0);
+}
+
 /** Ordered sibling list a node belongs to (its parent's combined children). */
 export function getMindmapSiblings(parent: MindmapNode): MindmapNode[] {
   return [...parent.children, ...(parent.leftChildren || []), ...(parent.rightChildren || [])];

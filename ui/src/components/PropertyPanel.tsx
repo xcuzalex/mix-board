@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { PRESET_COLORS, STICKY_NOTE_COLORS } from '../utils/color';
+import { mapMindmapTree, findMindmapNode, getMindmapSiblings } from '../canvas/mindmap-ops';
+import { layoutMindmapNodes, measureMindmapNodeWith, getLayoutBounds } from '../canvas/render/mindmap-layout';
 import type {
   Element,
   StrokeStyle,
@@ -88,6 +90,9 @@ export function PropertyPanel() {
   const highlighterColor = useUIStore((s) => s.highlighterColor);
   const setFreedrawColor = useUIStore((s) => s.setFreedrawColor);
   const setHighlighterColor = useUIStore((s) => s.setHighlighterColor);
+  const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
+  const setZoom = useUIStore((s) => s.setZoom);
+  const setViewport = useUIStore((s) => s.setViewport);
   const historyGestureRef = useRef(false);
 
   useEffect(() => {
@@ -335,6 +340,56 @@ export function PropertyPanel() {
 
       {isMindmap && mindmap && (
         <>
+          <Section label="操作">
+            {(() => {
+              const selNodeId = selectedMindmapNode?.elementId === mindmap.id ? selectedMindmapNode.nodeId : null;
+              const selNode = selNodeId ? findMindmapNode(mindmap.rootNode, selNodeId) : null;
+              const canToggle = !!selNode && selNode.id !== mindmap.rootNode.id && getMindmapSiblings(selNode).length > 0;
+              const fitToScreen = () => {
+                const ctx = document.createElement('canvas').getContext('2d');
+                if (!ctx) return;
+                const bounds = getLayoutBounds(layoutMindmapNodes(mindmap, (n) => measureMindmapNodeWith(ctx, n)));
+                if (!bounds) return;
+                const rect = document.querySelector('canvas')?.getBoundingClientRect();
+                const w = rect?.width ?? window.innerWidth;
+                const h = rect?.height ?? window.innerHeight;
+                const pad = 96;
+                const z = Math.max(0.1, Math.min(2, Math.min((w - pad * 2) / bounds.width, (h - pad * 2) / bounds.height)));
+                setZoom(z);
+                setViewport(w / 2 - (bounds.x + bounds.width / 2) * z, h / 2 - (bounds.y + bounds.height / 2) * z);
+              };
+              const btn = 'rounded-lg px-2 py-1.5 text-xs text-slate-600 transition hover:bg-black/[0.05] hover:text-slate-900 disabled:opacity-40 disabled:hover:bg-transparent dark:text-slate-300 dark:hover:bg-white/10';
+              return (
+                <div className="grid grid-cols-2 gap-1">
+                  <button className={btn} onClick={() => update({ rootNode: mapMindmapTree(mindmap.rootNode, () => ({ collapsed: false })) } as any)}>
+                    展开全部
+                  </button>
+                  <button
+                    className={btn}
+                    onClick={() => update({
+                      rootNode: mapMindmapTree(mindmap.rootNode, (n, depth) => ({ collapsed: depth >= 1 && getMindmapSiblings(n).length > 0 })),
+                    } as any)}
+                  >
+                    只看一级
+                  </button>
+                  <button
+                    className={btn}
+                    disabled={!canToggle}
+                    title={canToggle ? undefined : '先在脑图中选中一个有子主题的节点'}
+                    onClick={() => selNodeId && update({
+                      rootNode: mapMindmapTree(mindmap.rootNode, (n) => (n.id === selNodeId ? { collapsed: !n.collapsed } : null)),
+                    } as any)}
+                  >
+                    {selNode?.collapsed ? '展开所选' : '收起所选'}
+                  </button>
+                  <button className={btn} onClick={fitToScreen}>
+                    适应屏幕
+                  </button>
+                </div>
+              );
+            })()}
+          </Section>
+
           <Section label="布局">
             <div className="grid grid-cols-2 gap-1">
               {MINDMAP_LAYOUT_OPTIONS.map(({ value, label }) => (
