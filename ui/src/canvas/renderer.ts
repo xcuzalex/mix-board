@@ -495,7 +495,8 @@ export class Renderer {
     const vpRect = this.getExpandedViewportRect();
     for (const el of elements) {
       if (excludedElementIds?.has(el.id)) continue;
-      if (el.id === editingElementId) continue;
+      // The element being edited still draws: each renderer skips only its
+      // text, so a shape stays visible behind the (transparent) editor.
       if (!this.isElementInExpandedViewport(el, vpRect)) continue;
       if (!this.isElementVisible(el)) continue;
       this.renderElement(el, false);
@@ -1145,8 +1146,10 @@ export class Renderer {
     ctx.scale(scale, scale);
     ctx.translate(-cx, -cy);
 
+    // Multi-selection keeps a faint hairline so the group's extent is readable.
+    ctx.globalAlpha *= 0.55;
     ctx.strokeStyle = THEME.selected;
-    ctx.lineWidth = 1.5 / this.viewport.zoom;
+    ctx.lineWidth = 1 / this.viewport.zoom;
     ctx.setLineDash([]);
     ctx.strokeRect(
       bounds.x - padding, bounds.y - padding,
@@ -1158,7 +1161,6 @@ export class Renderer {
 
   private renderSelectionBox(el: Element) {
     const ctx = this.ctx;
-    const padding = 4;
     const isLinear = el.type === 'line' || el.type === 'arrow';
     let bounds: { x: number; y: number; width: number; height: number };
     if (isLinear) {
@@ -1191,16 +1193,9 @@ export class Renderer {
     ctx.scale(scale, scale);
     ctx.translate(-cx, -cy);
 
-    ctx.strokeStyle = THEME.selected;
-    ctx.lineWidth = 1.5 / this.viewport.zoom;
-    ctx.setLineDash([]);
-
-    ctx.strokeRect(
-      bounds.x - padding, bounds.y - padding,
-      bounds.width + padding * 2, bounds.height + padding * 2,
-    );
-
-    const baseHandleSize = 8 / this.viewport.zoom;
+    // No bounding frame (like Freeform / Lark): the element itself plus
+    // floating round handles is enough to read as selected.
+    const baseHandleSize = 9 / this.viewport.zoom;
 
     if (isLinear) {
       const points = getLinearAbsolutePoints(el as LinearElement, this.sceneIndex);
@@ -1209,22 +1204,7 @@ export class Renderer {
         ['end', points[points.length - 1][0], points[points.length - 1][1]],
       ];
       for (const [key, hx, hy] of endpointHandles) {
-        const isHovered = this.hoveredHandle === key;
-        const handleSize = isHovered ? baseHandleSize * 1.25 : baseHandleSize;
-        const hhs = handleSize / 2;
-
-        if (isHovered) {
-          ctx.beginPath();
-          ctx.arc(hx, hy, handleSize * 0.8, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
-          ctx.fill();
-        }
-
-        ctx.fillStyle = isHovered ? '#007AFF' : '#FFFFFF';
-        ctx.strokeStyle = THEME.selected;
-        ctx.lineWidth = 1.5 / this.viewport.zoom;
-        ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);
-        ctx.strokeRect(hx - hhs, hy - hhs, handleSize, handleSize);
+        this.drawHandle(hx, hy, baseHandleSize, this.hoveredHandle === key);
       }
       ctx.restore();
       return;
@@ -1242,24 +1222,28 @@ export class Renderer {
     ];
 
     for (const [key, hx, hy] of handles) {
-      const isHovered = this.hoveredHandle === key;
-      const handleSize = isHovered ? baseHandleSize * 1.25 : baseHandleSize;
-      const hhs = handleSize / 2;
-
-      if (isHovered) {
-        ctx.beginPath();
-        ctx.arc(hx, hy, handleSize * 0.8, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
-        ctx.fill();
-      }
-
-      ctx.fillStyle = isHovered ? '#007AFF' : '#FFFFFF';
-      ctx.strokeStyle = THEME.selected;
-      ctx.lineWidth = 1.5 / this.viewport.zoom;
-      ctx.fillRect(hx - hhs, hy - hhs, handleSize, handleSize);
-      ctx.strokeRect(hx - hhs, hy - hhs, handleSize, handleSize);
+      this.drawHandle(hx, hy, baseHandleSize, this.hoveredHandle === key);
     }
 
+    ctx.restore();
+  }
+
+  /** Round white handle with a soft shadow; fills blue while hovered. */
+  private drawHandle(hx: number, hy: number, size: number, hovered: boolean) {
+    const ctx = this.ctx;
+    const radius = (hovered ? size * 1.2 : size) / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(hx, hy, radius, 0, Math.PI * 2);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.22)';
+    ctx.shadowBlur = 3;
+    ctx.shadowOffsetY = 0.5;
+    ctx.fillStyle = hovered ? '#007AFF' : '#FFFFFF';
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = hovered ? '#FFFFFF' : THEME.selected;
+    ctx.lineWidth = 1.25 / this.viewport.zoom;
+    ctx.stroke();
     ctx.restore();
   }
 
