@@ -1,114 +1,38 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- MixNote app icon: a dot-grid canvas with a sticky note and a text card
+       joined by an arrow, plus a pen stroke: notes, connections, free canvas.
+       macOS icon grid: 824px rounded square inset 100px, soft shadow. -->
   <defs>
-    <linearGradient id="bgBase" x1="160" y1="120" x2="868" y2="924" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#09182E"/>
-      <stop offset="0.45" stop-color="#131E4F"/>
-      <stop offset="1" stop-color="#050912"/>
-    </linearGradient>
-    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(742 238) rotate(136.661) scale(512.084 628.835)">
-      <stop stop-color="#8D4DFF" stop-opacity="0.95"/>
-      <stop offset="0.35" stop-color="#3F82FF" stop-opacity="0.56"/>
-      <stop offset="0.7" stop-color="#00D9FF" stop-opacity="0.18"/>
-      <stop offset="1" stop-color="#00D9FF" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="auroraLeft" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(246 790) rotate(-27.9795) scale(354.286 267.724)">
-      <stop stop-color="#00F0B5" stop-opacity="0.78"/>
-      <stop offset="0.45" stop-color="#00C4FF" stop-opacity="0.34"/>
-      <stop offset="1" stop-color="#00C4FF" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="panelStroke" x1="220" y1="154" x2="818" y2="868" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#80E9FF"/>
-      <stop offset="0.4" stop-color="#7E7CFF"/>
-      <stop offset="0.72" stop-color="#FF4DD8"/>
-      <stop offset="1" stop-color="#FFB45D"/>
-    </linearGradient>
-    <linearGradient id="panelFill" x1="296" y1="236" x2="772" y2="834" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#132A4A" stop-opacity="0.88"/>
-      <stop offset="1" stop-color="#0B122C" stop-opacity="0.68"/>
-    </linearGradient>
-    <linearGradient id="mStroke" x1="308" y1="332" x2="726" y2="734" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#8EFFC9"/>
-      <stop offset="0.28" stop-color="#38E5FF"/>
-      <stop offset="0.62" stop-color="#6B7DFF"/>
-      <stop offset="1" stop-color="#FF63E1"/>
-    </linearGradient>
-    <linearGradient id="beamA" x1="276" y1="664" x2="554" y2="418" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#00FFD1"/>
-      <stop offset="1" stop-color="#4AB8FF"/>
-    </linearGradient>
-    <linearGradient id="beamB" x1="766" y1="658" x2="516" y2="418" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFBE5C"/>
-      <stop offset="1" stop-color="#FF5AE0"/>
-    </linearGradient>
-    <filter id="shadow" x="112" y="112" width="800" height="800" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-      <feOffset dy="24"/>
-      <feGaussianBlur stdDeviation="30"/>
-      <feColorMatrix type="matrix" values="0 0 0 0 0.0117647 0 0 0 0 0.0470588 0 0 0 0 0.141176 0 0 0 0.42 0"/>
-      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape"/>
-    </filter>
-    <filter id="glowSoft" x="148" y="146" width="736" height="736" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-      <feGaussianBlur stdDeviation="24" result="effect1_foregroundBlur_1_2"/>
-    </filter>
-    <filter id="glowLine" x="210" y="202" width="604" height="596" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-      <feGaussianBlur stdDeviation="8" result="effect1_foregroundBlur_1_2"/>
-    </filter>
-    <clipPath id="roundedClip">
-      <rect x="128" y="128" width="768" height="768" rx="216"/>
-    </clipPath>
+    <linearGradient id="t" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#EEF2F7"/></linearGradient>
+    <pattern id="dots" width="58" height="58" patternUnits="userSpaceOnUse"><circle cx="29" cy="29" r="5" fill="#B8C2D0" fill-opacity="0.6"/></pattern>
+    <filter id="s" x="40" y="60" width="944" height="944" filterUnits="userSpaceOnUse"><feDropShadow dy="14" stdDeviation="20" flood-color="#0B1B33" flood-opacity="0.22"/></filter>
+    <filter id="c" x="-25%" y="-25%" width="150%" height="160%"><feDropShadow dy="10" stdDeviation="12" flood-color="#0B1B33" flood-opacity="0.16"/></filter>
+    <clipPath id="k"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
   </defs>
+  <g filter="url(#s)"><rect x="100" y="100" width="824" height="824" rx="186" fill="url(#t)"/></g>
+  <rect x="100" y="100" width="824" height="824" fill="url(#dots)" clip-path="url(#k)"/>
 
-  <g filter="url(#shadow)">
-    <rect x="128" y="128" width="768" height="768" rx="216" fill="url(#bgBase)"/>
-    <g clip-path="url(#roundedClip)">
-      <rect x="128" y="128" width="768" height="768" rx="216" fill="url(#bgGlow)"/>
-      <rect x="128" y="128" width="768" height="768" rx="216" fill="url(#auroraLeft)"/>
-
-      <path d="M130 742C242 638 344 606 450 612C566 619 622 705 714 718C804 731 875 678 916 633V920H126L130 742Z" fill="#0C1A31" fill-opacity="0.62"/>
-      <path d="M118 374C209 274 286 248 374 260C469 272 529 348 618 354C708 360 792 315 908 180V126H118V374Z" fill="#1A2256" fill-opacity="0.28"/>
-
-      <g opacity="0.22">
-        <path d="M208 292H816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M208 424H816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M208 556H816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M208 688H816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M292 208V816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M424 208V816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M556 208V816" stroke="#6ED9FF" stroke-width="3"/>
-        <path d="M688 208V816" stroke="#6ED9FF" stroke-width="3"/>
-      </g>
-
-      <g filter="url(#glowSoft)" opacity="0.6">
-        <circle cx="332" cy="306" r="68" fill="#35E7FF"/>
-        <circle cx="738" cy="314" r="72" fill="#8A57FF"/>
-        <circle cx="768" cy="686" r="70" fill="#FF60CB"/>
-      </g>
-
-      <rect x="238" y="214" width="548" height="596" rx="150" fill="url(#panelFill)" stroke="url(#panelStroke)" stroke-width="10"/>
-
-      <g filter="url(#glowLine)">
-        <path d="M316 655L316 367L448 545L512 459L576 545L708 367V655" stroke="url(#mStroke)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-      </g>
-      <path d="M316 655L316 367L448 545L512 459L576 545L708 367V655" stroke="white" stroke-opacity="0.28" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-
-      <path d="M256 716L434 559" stroke="url(#beamA)" stroke-width="16" stroke-linecap="round" opacity="0.82"/>
-      <path d="M768 716L586 553" stroke="url(#beamB)" stroke-width="16" stroke-linecap="round" opacity="0.82"/>
-
-      <g>
-        <circle cx="256" cy="716" r="26" fill="#07111F" stroke="#4AF4FF" stroke-width="10"/>
-        <circle cx="434" cy="559" r="20" fill="#07111F" stroke="#46BEFF" stroke-width="9"/>
-        <circle cx="586" cy="553" r="20" fill="#101329" stroke="#FF67E0" stroke-width="9"/>
-        <circle cx="768" cy="716" r="26" fill="#140E1F" stroke="#FFBE5C" stroke-width="10"/>
-      </g>
-
-      <path d="M274 234C360 196 448 185 532 190" stroke="#A7F6FF" stroke-width="7" stroke-linecap="round" opacity="0.65"/>
-      <path d="M696 792C628 818 560 832 482 830" stroke="#FFC47F" stroke-width="7" stroke-linecap="round" opacity="0.52"/>
-    </g>
+  <!-- yellow sticky note, slightly tilted -->
+  <g transform="rotate(-6 340 350)" filter="url(#c)">
+    <rect x="200" y="210" width="290" height="290" rx="26" fill="#FFD95A"/>
+    <path d="M250 290 H 430" stroke="#7A5A00" stroke-opacity="0.75" stroke-width="22" stroke-linecap="round"/>
+    <path d="M250 350 H 400" stroke="#7A5A00" stroke-opacity="0.4" stroke-width="18" stroke-linecap="round"/>
+    <path d="M250 405 H 380" stroke="#7A5A00" stroke-opacity="0.4" stroke-width="18" stroke-linecap="round"/>
   </g>
+
+  <!-- connector from sticky to card -->
+  <path d="M470 470 C 560 520, 560 590, 560 600" stroke="#3478F6" stroke-width="20" stroke-linecap="round" fill="none"/>
+  <path d="M528 586 L 562 628 L 594 584" stroke="#3478F6" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- white text card -->
+  <g filter="url(#c)">
+    <rect x="420" y="640" width="400" height="200" rx="34" fill="#FFFFFF"/>
+  </g>
+  <rect x="421.5" y="641.5" width="397" height="197" rx="32.5" stroke="#0B1B33" stroke-opacity="0.08" stroke-width="3"/>
+  <path d="M470 700 H 640" stroke="#1F2937" stroke-width="24" stroke-linecap="round"/>
+  <path d="M470 760 H 760" stroke="#A3ACB9" stroke-width="18" stroke-linecap="round"/>
+  <path d="M470 802 H 700" stroke="#A3ACB9" stroke-width="18" stroke-linecap="round"/>
+
+  <!-- pen stroke -->
+  <path d="M640 300 C 690 230, 760 230, 770 290 C 780 350, 700 360, 720 420 C 735 460, 800 450, 830 410" stroke="#F0573C" stroke-width="20" stroke-linecap="round" fill="none"/>
 </svg>
