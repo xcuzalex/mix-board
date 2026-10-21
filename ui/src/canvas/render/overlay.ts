@@ -3,12 +3,12 @@
  * layer: background grid, snap guides, the drag-select rectangle, and the lasso
  * highlight. Extracted from renderer.ts (P0.B).
  *
- * Pure drawing functions. Scene/viewport state is threaded in; `getMindmapBounds`
- * is injected because it depends on the Renderer's layout cache.
+ * Pure drawing functions. Scene/viewport state is threaded in; element bounds
+ * come from the Renderer because mindmap bounds depend on its layout cache.
  */
-import type { Element, LinearElement, MindmapElement } from '../../types/element';
+import type { Element } from '../../types/element';
 import type { SnapGuide } from '../../utils/math';
-import { getLinearBounds, type SceneIndex } from '../linear';
+import type { SceneIndex } from '../linear';
 import type { Viewport } from '../viewport';
 import { THEME } from '../../utils/color';
 import { canvasTheme } from '../canvas-theme';
@@ -16,6 +16,11 @@ import { canvasTheme } from '../canvas-theme';
 type Box = { x: number; y: number; width: number; height: number };
 type Bounds = { x: number; y: number; width: number; height: number };
 
+/**
+ * Line grid. Like the dot grid, spacing doubles when zoomed out so lines never
+ * get closer than ~12px on screen (otherwise low zoom floods the canvas with
+ * thousands of lines).
+ */
 export function drawGrid(
   ctx: CanvasRenderingContext2D,
   gridSize: number,
@@ -23,24 +28,29 @@ export function drawGrid(
   width: number,
   height: number,
 ) {
-  const startX = Math.floor(-vp.x / vp.zoom / gridSize) * gridSize;
-  const startY = Math.floor(-vp.y / vp.zoom / gridSize) * gridSize;
-  const endX = startX + width / vp.zoom + gridSize;
-  const endY = startY + height / vp.zoom + gridSize;
+  let spacing = Math.max(gridSize, 1);
+  while (spacing * vp.zoom < 12) spacing *= 2;
 
+  const startX = Math.floor(-vp.x / vp.zoom / spacing) * spacing;
+  const startY = Math.floor(-vp.y / vp.zoom / spacing) * spacing;
+  const endX = startX + width / vp.zoom + spacing;
+  const endY = startY + height / vp.zoom + spacing;
+
+  ctx.save();
   ctx.strokeStyle = canvasTheme.grid;
   ctx.lineWidth = 1 / vp.zoom;
   ctx.beginPath();
 
-  for (let x = startX; x <= endX; x += gridSize) {
+  for (let x = startX; x <= endX; x += spacing) {
     ctx.moveTo(x, startY);
     ctx.lineTo(x, endY);
   }
-  for (let y = startY; y <= endY; y += gridSize) {
+  for (let y = startY; y <= endY; y += spacing) {
     ctx.moveTo(startX, y);
     ctx.lineTo(endX, y);
   }
   ctx.stroke();
+  ctx.restore();
 }
 
 /**
@@ -96,7 +106,11 @@ export function drawSnapGuides(
   height: number,
   sceneIndex: SceneIndex,
 ) {
-  const extent = 10000; // Large enough to cover visible area
+  // Visible world-space bounds: guides span exactly the viewport.
+  const vpLeft = -vp.x / vp.zoom;
+  const vpTop = -vp.y / vp.zoom;
+  const vpRight = vpLeft + width / vp.zoom;
+  const vpBottom = vpTop + height / vp.zoom;
 
   ctx.save();
 
@@ -108,21 +122,17 @@ export function drawSnapGuides(
   for (const guide of guides) {
     ctx.beginPath();
     if (guide.type === 'vertical') {
-      ctx.moveTo(guide.position, -extent);
-      ctx.lineTo(guide.position, extent);
+      ctx.moveTo(guide.position, vpTop);
+      ctx.lineTo(guide.position, vpBottom);
     } else {
-      ctx.moveTo(-extent, guide.position);
-      ctx.lineTo(extent, guide.position);
+      ctx.moveTo(vpLeft, guide.position);
+      ctx.lineTo(vpRight, guide.position);
     }
     ctx.stroke();
   }
 
   // 2. Draw endpoint dots at viewport boundaries
   ctx.setLineDash([]);
-  const vpLeft = -vp.x / vp.zoom;
-  const vpTop = -vp.y / vp.zoom;
-  const vpRight = vpLeft + width / vp.zoom;
-  const vpBottom = vpTop + height / vp.zoom;
   const dotRadius = 3 / vp.zoom;
 
   for (const guide of guides) {
@@ -187,12 +197,15 @@ export function drawSnapGuides(
   ctx.restore();
 }
 
+/**
+ * Lasso highlight over an element's bounds (from the Renderer's shared
+ * getElementBounds), rotated with the element.
+ */
 export function drawLassoHighlight(
   ctx: CanvasRenderingContext2D,
   el: Element,
-  vp: Viewport,
-  sceneIndex: SceneIndex,
-  getMindmapBounds: (el: MindmapElement) => Bounds,
+  bounds: Bounds,
+  zoom: number,
 ) {
   ctx.save();
 
@@ -204,27 +217,11 @@ export function drawLassoHighlight(
     ctx.translate(-cx, -cy);
   }
 
-  if (el.type === 'line' || el.type === 'arrow') {
-    const bounds = getLinearBounds(el as LinearElement, sceneIndex);
-    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
-    ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
-    ctx.lineWidth = 1 / vp.zoom;
-    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-  } else if (el.type === 'mindmap') {
-    const bounds = getMindmapBounds(el as MindmapElement);
-    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
-    ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
-    ctx.lineWidth = 1 / vp.zoom;
-    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-  } else {
-    ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
-    ctx.fillRect(el.x, el.y, el.width, el.height);
-    ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
-    ctx.lineWidth = 1 / vp.zoom;
-    ctx.strokeRect(el.x, el.y, el.width, el.height);
-  }
+  ctx.fillStyle = 'rgba(0, 122, 255, 0.12)';
+  ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  ctx.strokeStyle = 'rgba(0, 122, 255, 0.3)';
+  ctx.lineWidth = 1 / zoom;
+  ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
   ctx.restore();
 }

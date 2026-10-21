@@ -14,6 +14,7 @@ import {
   type SceneIndex,
 } from '../linear';
 import { applyStrokeStyle } from './stroke';
+import { canvasTheme } from '../canvas-theme';
 
 export function drawArrowHead(
   ctx: CanvasRenderingContext2D,
@@ -63,7 +64,7 @@ export function drawArrowHead(
       ctx.lineTo(toX - headLen * Math.cos(angle - halfAngle), toY - headLen * Math.sin(angle - halfAngle));
       ctx.lineTo(toX - headLen * Math.cos(angle + halfAngle), toY - headLen * Math.sin(angle + halfAngle));
       ctx.closePath();
-      ctx.fillStyle = '#FFFFFF';
+      ctx.fillStyle = canvasTheme.background;
       ctx.fill();
       ctx.stroke();
       break;
@@ -78,7 +79,7 @@ export function drawArrowHead(
       ctx.lineTo(toX - r * Math.cos(angle) - r * 0.5 * Math.sin(angle), toY - r * Math.sin(angle) + r * 0.5 * Math.cos(angle));
       ctx.closePath();
       if (arrowType === 'hollow_diamond') {
-        ctx.fillStyle = '#FFFFFF';
+        ctx.fillStyle = canvasTheme.background;
       }
       ctx.fill();
       ctx.stroke();
@@ -92,7 +93,7 @@ export function drawArrowHead(
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       if (arrowType === 'hollow_circle') {
-        ctx.fillStyle = '#FFFFFF';
+        ctx.fillStyle = canvasTheme.background;
       }
       ctx.fill();
       ctx.stroke();

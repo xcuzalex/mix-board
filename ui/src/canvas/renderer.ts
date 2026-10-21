@@ -1,4 +1,4 @@
-import type { Element, LinearElement, MindmapElement, MindmapNode, ImageElement } from '../types/element';
+import type { Element, LinearElement, MindmapElement, MindmapNode, ImageElement, ShapeVariant } from '../types/element';
 import { getStroke } from 'perfect-freehand';
 import rough from 'roughjs';
 import type { RoughCanvas } from 'roughjs/bin/canvas';
@@ -14,7 +14,7 @@ import {
   type SceneIndex,
 } from './linear';
 import { createShapePath } from './shape-utils';
-import { applyStrokeStyle as applyStrokeStyleShared } from './render/stroke';
+import { applyStrokeStyle } from './render/stroke';
 import {
   drawRectangle,
   drawEllipse,
@@ -23,12 +23,19 @@ import {
   type GetShapePath,
 } from './render/shapes';
 import { drawLinear } from './render/linear';
-import { drawMarkdown, CARD_PADDING, DEFAULT_NOTE_FONT, type LinkHit } from './render/markdown';
+import {
+  drawMarkdown,
+  invalidateMarkdownLayoutCache,
+  CARD_PADDING,
+  DEFAULT_NOTE_FONT,
+  type LinkHit,
+} from './render/markdown';
 import {
   type Rect,
-  getMindmapLayoutSignature,
+  getLayoutBounds,
   layoutMindmapNodes,
   measureMindmapNodeWith,
+  visibleChildrenOf,
 } from './render/mindmap-layout';
 import {
   drawGrid,
@@ -40,29 +47,92 @@ import {
 import {
   type MindmapDrawDeps,
   drawMindmap,
+  drawMindmapChrome,
   renderMindmapDragPreview as drawMindmapDragPreview,
 } from './render/mindmap';
+import { canvasTheme } from './canvas-theme';
 import type { SnapGuide } from '../utils/math';
 
-// Image cache for rendering
+type Bounds = { x: number; y: number; width: number; height: number };
+
+// --- Async asset notifications ----------------------------------------------
+// Images decode and web fonts load asynchronously; the canvas only repaints
+// when told to, so listeners are notified whenever an asset that changes the
+// rendered output becomes available.
+const assetListeners = new Set<() => void>();
+
+function notifyAssetListeners() {
+  for (const listener of Array.from(assetListeners)) {
+    try {
+      listener();
+    } catch (error) {
+      console.error('Renderer asset listener failed', error);
+    }
+  }
+}
+
+/**
+ * Subscribes to renderer asset readiness: `cb` runs after an image finishes
+ * loading into the image cache, and after web fonts finish loading (text layout
+ * caches are already invalidated by then). Use it to schedule a scene redraw.
+ * Returns an unsubscribe function.
+ */
+export function subscribeRendererAssets(cb: () => void): () => void {
+  installFontLoadInvalidation();
+  assetListeners.add(cb);
+  return () => {
+    assetListeners.delete(cb);
+  };
+}
+
+// --- Image cache ------------------------------------------------------------
 const imageCache = new Map<string, HTMLImageElement>();
+/** In-flight loads, so a load evicted (or superseded) mid-flight never lands. */
+const pendingImageLoads = new Map<string, { img: HTMLImageElement; promise: Promise<void> }>();
 
 export function clearImageCache() {
   imageCache.clear();
+  pendingImageLoads.clear();
+}
+
+/** Whether an image is decoded in the cache or currently loading. */
+export function isImageCachedOrLoading(fileId: string): boolean {
+  return imageCache.has(fileId) || pendingImageLoads.has(fileId);
+}
+
+/** Evicts cached (and in-flight) images whose file id is not in `fileIds`. */
+export function retainImageCache(fileIds: ReadonlySet<string>) {
+  for (const id of Array.from(imageCache.keys())) {
+    if (!fileIds.has(id)) imageCache.delete(id);
+  }
+  for (const id of Array.from(pendingImageLoads.keys())) {
+    if (!fileIds.has(id)) pendingImageLoads.delete(id);
+  }
 }
 
 export function loadImageToCache(fileId: string, dataURL: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (imageCache.has(fileId)) { resolve(); return; }
-    const img = new Image();
-    img.onload = () => { imageCache.set(fileId, img); resolve(); };
-    img.onerror = reject;
-    img.src = dataURL;
-  });
-}
+  if (imageCache.has(fileId)) return Promise.resolve();
+  const pending = pendingImageLoads.get(fileId);
+  if (pending) return pending.promise;
 
-export function getImageFromCache(fileId: string): HTMLImageElement | undefined {
-  return imageCache.get(fileId);
+  const img = new Image();
+  const promise = new Promise<void>((resolve, reject) => {
+    img.onload = () => {
+      if (pendingImageLoads.get(fileId)?.img === img) {
+        pendingImageLoads.delete(fileId);
+        imageCache.set(fileId, img);
+        notifyAssetListeners();
+      }
+      resolve();
+    };
+    img.onerror = (error) => {
+      if (pendingImageLoads.get(fileId)?.img === img) pendingImageLoads.delete(fileId);
+      reject(error);
+    };
+  });
+  pendingImageLoads.set(fileId, { img, promise });
+  img.src = dataURL;
+  return promise;
 }
 
 export interface SelectionBox {
@@ -101,11 +171,28 @@ export interface OverlayRenderOptions {
   lassoSelectedIds?: string[];
 }
 
+/**
+ * Cached mindmap layout. Keyed (in a WeakMap) by root-node identity: mindmap
+ * trees are immutable, so any structural / text change yields a new root.
+ */
 type MindmapLayoutCacheEntry = {
-  signature: string;
+  generation: number;
+  layoutKind: MindmapElement['layout'] | undefined;
+  branchStyle: MindmapElement['branchStyle'] | undefined;
   x: number;
   y: number;
   layout: Map<string, Rect>;
+};
+
+/** Cached freehand outline, keyed (in a WeakMap) by the points-array identity. */
+type FreehandCacheEntry = {
+  type: 'freedraw' | 'highlighter';
+  strokeWidth: number;
+  pressures: number[] | undefined;
+  /** The live stroke appends to its arrays in place, so lengths are checked too. */
+  pointCount: number;
+  pressureCount: number;
+  path: Path2D;
 };
 
 let textLayoutCacheGeneration = 0;
@@ -113,6 +200,7 @@ let fontLoadInvalidationInstalled = false;
 
 function invalidateTextLayoutCaches() {
   textLayoutCacheGeneration += 1;
+  invalidateMarkdownLayoutCache();
 }
 
 function installFontLoadInvalidation() {
@@ -124,6 +212,7 @@ function installFontLoadInvalidation() {
   const fontFaceSet = document.fonts;
   const handleFontLoad = () => {
     invalidateTextLayoutCaches();
+    notifyAssetListeners();
   };
 
   void fontFaceSet.ready.then(handleFontLoad).catch(() => {});
@@ -145,12 +234,10 @@ export class Renderer {
   private mindmapDropTarget: { elementId: string; nodeId: string } | null = null;
   private mindmapDragPreview: { elementId: string; sourceNodeId: string; pointerX: number; pointerY: number; offsetX: number; offsetY: number } | null = null;
   private shapePathCache = new Map<string, Path2D>();
-  private freehandPathCache = new Map<string, Path2D>();
-  private stickyWrapCache = new Map<string, string[]>();
+  private freehandPathCache = new WeakMap<[number, number][], FreehandCacheEntry>();
   private mindmapNodeMeasureCache = new Map<string, { w: number; h: number }>();
-  private mindmapLayoutCache = new Map<string, MindmapLayoutCacheEntry>();
+  private mindmapLayoutCache = new WeakMap<MindmapNode, MindmapLayoutCacheEntry>();
   private textLayoutCacheGeneration = -1;
-  private interactiveChrome = false;
   private hoveredElementId: string | null = null;
   private hoveredHandle: string | null = null;
   private selectionAnimProgress = 1;
@@ -195,22 +282,6 @@ export class Renderer {
     return null;
   }
 
-  private isElementVisible(el: Element): boolean {
-    const margin = 50;
-    const vpLeft = -this.viewport.x / this.viewport.zoom - margin;
-    const vpTop = -this.viewport.y / this.viewport.zoom - margin;
-    const vpRight = vpLeft + this.width / this.viewport.zoom + margin * 2;
-    const vpBottom = vpTop + this.height / this.viewport.zoom + margin * 2;
-    if (el.type === 'line' || el.type === 'arrow') {
-      const bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-      return bounds.x + bounds.width >= vpLeft && bounds.x <= vpRight &&
-             bounds.y + bounds.height >= vpTop && bounds.y <= vpBottom;
-    }
-    if (el.type === 'mindmap') return true;
-    return el.x + el.width >= vpLeft && el.x <= vpRight &&
-           el.y + el.height >= vpTop && el.y <= vpBottom;
-  }
-
   private getSceneIndex(elements: Element[]): SceneIndex {
     if (this.sceneIndexCache && this.sceneIndexCache.elements === elements) {
       return this.sceneIndexCache.index;
@@ -220,7 +291,8 @@ export class Renderer {
     return index;
   }
 
-  private getExpandedViewportRect(): { left: number; top: number; right: number; bottom: number } {
+  /** World-space viewport rect, padded by 100 screen pixels, used for culling. */
+  private getCullRect(): { left: number; top: number; right: number; bottom: number } {
     const margin = 100 / this.viewport.zoom;
     const left = -this.viewport.x / this.viewport.zoom - margin;
     const top = -this.viewport.y / this.viewport.zoom - margin;
@@ -229,18 +301,26 @@ export class Renderer {
     return { left, top, right, bottom };
   }
 
-  private isElementInExpandedViewport(
+  /** Whether an element's (rotation-aware) bounds intersect the cull rect. */
+  private isElementInViewport(
     el: Element,
     vp: { left: number; top: number; right: number; bottom: number },
   ): boolean {
-    if (el.type === 'line' || el.type === 'arrow') {
-      const bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-      return bounds.x + bounds.width >= vp.left && bounds.x <= vp.right &&
-             bounds.y + bounds.height >= vp.top && bounds.y <= vp.bottom;
+    let b = this.getElementBounds(el);
+    if (el.angle) {
+      // Rotation is about the element's own centre; cover every rotation.
+      const cx = el.x + el.width / 2;
+      const cy = el.y + el.height / 2;
+      const r = Math.max(
+        Math.hypot(b.x - cx, b.y - cy),
+        Math.hypot(b.x + b.width - cx, b.y - cy),
+        Math.hypot(b.x - cx, b.y + b.height - cy),
+        Math.hypot(b.x + b.width - cx, b.y + b.height - cy),
+      );
+      b = { x: cx - r, y: cy - r, width: r * 2, height: r * 2 };
     }
-    if (el.type === 'mindmap') return true;
-    return el.x + el.width >= vp.left && el.x <= vp.right &&
-           el.y + el.height >= vp.top && el.y <= vp.bottom;
+    return b.x + b.width >= vp.left && b.x <= vp.right &&
+           b.y + b.height >= vp.top && b.y <= vp.bottom;
   }
 
   private trimCache<T>(cache: Map<string, T>, maxSize: number) {
@@ -254,9 +334,8 @@ export class Renderer {
   private refreshTextLayoutCachesIfNeeded() {
     if (this.textLayoutCacheGeneration === textLayoutCacheGeneration) return;
 
-    this.stickyWrapCache.clear();
+    // Layout-cache entries carry their generation and go stale on their own.
     this.mindmapNodeMeasureCache.clear();
-    this.mindmapLayoutCache.clear();
     this.textLayoutCacheGeneration = textLayoutCacheGeneration;
   }
 
@@ -269,12 +348,16 @@ export class Renderer {
 
   private getMindmapLayout(el: MindmapElement): Map<string, Rect> {
     this.refreshTextLayoutCachesIfNeeded();
-    const signature = getMindmapLayoutSignature(el);
-    const cached = this.mindmapLayoutCache.get(el.id);
-    if (cached && cached.signature === signature) {
+    if (!el.rootNode) return new Map();
+    const cached = this.mindmapLayoutCache.get(el.rootNode);
+    if (
+      cached
+      && cached.generation === textLayoutCacheGeneration
+      && cached.layoutKind === el.layout
+      && cached.branchStyle === el.branchStyle
+    ) {
       if (cached.x !== el.x || cached.y !== el.y) {
-        const shiftedLayout = this.shiftLayoutMap(cached.layout, el.x - cached.x, el.y - cached.y);
-        cached.layout = shiftedLayout;
+        cached.layout = this.shiftLayoutMap(cached.layout, el.x - cached.x, el.y - cached.y);
         cached.x = el.x;
         cached.y = el.y;
       }
@@ -282,42 +365,43 @@ export class Renderer {
     }
 
     const layout = layoutMindmapNodes(el, this.measureMindmapNode);
-    this.mindmapLayoutCache.set(el.id, { signature, x: el.x, y: el.y, layout });
-    this.trimCache(this.mindmapLayoutCache, 100);
+    this.mindmapLayoutCache.set(el.rootNode, {
+      generation: textLayoutCacheGeneration,
+      layoutKind: el.layout,
+      branchStyle: el.branchStyle,
+      x: el.x,
+      y: el.y,
+      layout,
+    });
     return layout;
   }
 
-  getMindmapBounds(el: MindmapElement): { x: number; y: number; width: number; height: number } {
-    const layout = this.getMindmapLayout(el);
-    if (layout.size === 0) {
-      return { x: el.x, y: el.y, width: el.width, height: el.height };
-    }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const rect of layout.values()) {
-      minX = Math.min(minX, rect.x);
-      minY = Math.min(minY, rect.y);
-      maxX = Math.max(maxX, rect.x + rect.w);
-      maxY = Math.max(maxY, rect.y + rect.h);
-    }
-    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  getMindmapBounds(el: MindmapElement): Bounds {
+    return getLayoutBounds(this.getMindmapLayout(el))
+      ?? { x: el.x, y: el.y, width: el.width, height: el.height };
   }
 
-  private getCollectiveBounds(selectedIds: string[]): { x: number; y: number; width: number; height: number } {
+  /**
+   * Axis-aligned, unrotated bounds of an element in canvas space: connector
+   * geometry for lines / arrows, laid-out node extents for mindmaps, else the
+   * element box. Shared by culling, selection, hover and lasso chrome.
+   */
+  getElementBounds(el: Element): Bounds {
+    if (el.type === 'line' || el.type === 'arrow') {
+      return getLinearBounds(el as LinearElement, this.sceneIndex);
+    }
+    if (el.type === 'mindmap') {
+      return this.getMindmapBounds(el as MindmapElement);
+    }
+    return { x: el.x, y: el.y, width: el.width, height: el.height };
+  }
+
+  private getCollectiveBounds(selectedIds: string[]): Bounds {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const id of selectedIds) {
       const el = this.sceneIndex.byId.get(id);
       if (!el) continue;
-      let bounds: { x: number; y: number; width: number; height: number };
-      if (el.type === 'line' || el.type === 'arrow') {
-        bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-      } else if (el.type === 'mindmap') {
-        bounds = this.getMindmapBounds(el as MindmapElement);
-      } else {
-        bounds = { x: el.x, y: el.y, width: el.width, height: el.height };
-      }
+      const bounds = this.getElementBounds(el);
       minX = Math.min(minX, bounds.x);
       minY = Math.min(minY, bounds.y);
       maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -338,7 +422,7 @@ export class Renderer {
     const key = `${variant}:${Math.round(width)}:${Math.round(height)}:${roundness}`;
     const cached = this.shapePathCache.get(key);
     if (cached) return cached;
-    const path = createShapePath(variant as any, 0, 0, width, height, roundness);
+    const path = createShapePath(variant as ShapeVariant, 0, 0, width, height, roundness);
     this.shapePathCache.set(key, path);
     this.trimCache(this.shapePathCache, 500);
     return path;
@@ -376,24 +460,28 @@ export class Renderer {
     return Math.max(0.2, Math.min(0.75, 0.72 - speed / 80));
   }
 
-  private getFreehandCacheKey(
-    type: 'freedraw' | 'highlighter',
-    points: [number, number][],
-    pressures: number[] | undefined,
-    strokeWidth: number,
-  ) {
-    return `${type}|${strokeWidth}|${points.map((point, index) => `${point[0]},${point[1]},${this.getStrokePressure(points, pressures, index).toFixed(3)}`).join(';')}`;
-  }
-
+  /**
+   * Outline path for a freehand stroke, cached by the identity of its points
+   * array (O(1) per frame). Committed strokes are immutable; the live stroke
+   * appends in place, which the length checks catch.
+   */
   private getCachedFreehandPath(
     type: 'freedraw' | 'highlighter',
     points: [number, number][],
     pressures: number[] | undefined,
     strokeWidth: number,
   ): Path2D {
-    const key = this.getFreehandCacheKey(type, points, pressures, strokeWidth);
-    const cached = this.freehandPathCache.get(key);
-    if (cached) return cached;
+    const cached = this.freehandPathCache.get(points);
+    if (
+      cached
+      && cached.type === type
+      && cached.strokeWidth === strokeWidth
+      && cached.pressures === pressures
+      && cached.pointCount === points.length
+      && cached.pressureCount === (pressures?.length ?? 0)
+    ) {
+      return cached.path;
+    }
 
     const strokePoints = points.map(([x, y], index) => [x, y, this.getStrokePressure(points, pressures, index)] as [number, number, number]);
     const outline = getStroke(strokePoints, type === 'highlighter'
@@ -426,14 +514,20 @@ export class Renderer {
         fallback.arc(lastX, lastY, Math.max(strokeWidth / 2, 1), 0, Math.PI * 2);
         return fallback;
       })();
-    this.freehandPathCache.set(key, path);
-    this.trimCache(this.freehandPathCache, 500);
+    this.freehandPathCache.set(points, {
+      type,
+      strokeWidth,
+      pressures,
+      pointCount: points.length,
+      pressureCount: pressures?.length ?? 0,
+      path,
+    });
     return path;
   }
 
   private getMindmapNodeMeasure(node: MindmapNode): { w: number; h: number } {
     this.refreshTextLayoutCachesIfNeeded();
-    const key = `${node.id}|${node.text}|${node.fontSize}|${node.nodeShape}`;
+    const key = `${node.id}|${node.text}|${node.fontSize}|${node.nodeShape}|${node.nodeType}`;
     const cached = this.mindmapNodeMeasureCache.get(key);
     if (cached) return cached;
 
@@ -481,7 +575,6 @@ export class Renderer {
     this.editingMindmapNodeId = editingMindmapNodeId ?? null;
     this.mindmapDropTarget = null;
     this.mindmapDragPreview = null;
-    this.interactiveChrome = false;
 
     this.clearCanvas(false, bgColor);
     this.applyViewportTransform();
@@ -492,14 +585,13 @@ export class Renderer {
       drawDotGrid(this.ctx, this.viewport, this.width, this.height);
     }
 
-    const vpRect = this.getExpandedViewportRect();
+    const cullRect = this.getCullRect();
     for (const el of elements) {
       if (excludedElementIds?.has(el.id)) continue;
       // The element being edited still draws: each renderer skips only its
       // text, so a shape stays visible behind the (transparent) editor.
-      if (!this.isElementInExpandedViewport(el, vpRect)) continue;
-      if (!this.isElementVisible(el)) continue;
-      this.renderElement(el, false);
+      if (!this.isElementInViewport(el, cullRect)) continue;
+      this.renderElement(el);
     }
   }
 
@@ -511,7 +603,6 @@ export class Renderer {
     this.editingMindmapNodeId = options.editingMindmapNodeId ?? null;
     this.mindmapDropTarget = options.mindmapDropTarget ?? null;
     this.mindmapDragPreview = options.mindmapDragPreview ?? null;
-    this.interactiveChrome = true;
     const selectedIdSet = new Set(options.selectedIds);
 
     // Update selection box animation
@@ -532,19 +623,17 @@ export class Renderer {
     this.clearCanvas(true);
     this.applyViewportTransform();
 
-    const vpRect = this.getExpandedViewportRect();
+    const cullRect = this.getCullRect();
     for (const el of options.previewElements ?? []) {
-      if (!this.isElementInExpandedViewport(el, vpRect)) continue;
-      if (!this.isElementVisible(el)) continue;
-      this.renderElement(el, false);
+      if (!this.isElementInViewport(el, cullRect)) continue;
+      this.renderElement(el);
     }
 
-    if (options.activeElement && this.isElementInExpandedViewport(options.activeElement, vpRect)) {
-      this.renderElement(options.activeElement, false);
+    if (options.activeElement && this.isElementInViewport(options.activeElement, cullRect)) {
+      this.renderElement(options.activeElement);
     }
 
     this.renderConnectionPoints(
-      options.geometryElements,
       options.hoveredElementId ?? null,
       options.hoveredAnchor ?? null,
       options.activeAnchors ?? [],
@@ -572,6 +661,7 @@ export class Renderer {
       }
     }
 
+    let mindmapChromeElementId: string | null = null;
     if (options.selectedIds.length > 1) {
       const collectiveBounds = this.getCollectiveBounds(options.selectedIds);
       this.renderSelectionBoxForBounds(collectiveBounds);
@@ -580,14 +670,21 @@ export class Renderer {
       const el = this.sceneIndex.byId.get(selectedId);
       if (el && this.editingElementId !== el.id) {
         if (el.type === 'mindmap' && this.selectedMindmapNode?.elementId === el.id) {
-          // Redraw the mindmap on the overlay (interactiveChrome=true) so the
-          // selected node ring shows, including for selections made elsewhere
-          // (e.g. the outline panel).
-          this.renderMindmap(el as MindmapElement);
+          // Ring the selected node over the scene-layer mindmap, including for
+          // selections made elsewhere (e.g. the outline panel). Only the chrome
+          // is drawn, so the tree's opacity is not composited twice.
+          this.renderMindmapChrome(el as MindmapElement, true);
+          mindmapChromeElementId = el.id;
         } else {
           this.renderSelectionBox(el);
         }
       }
+    }
+
+    const dropTarget = this.mindmapDropTarget;
+    if (dropTarget && dropTarget.elementId !== mindmapChromeElementId) {
+      const target = this.sceneIndex.byId.get(dropTarget.elementId);
+      if (target?.type === 'mindmap') this.renderMindmapChrome(target as MindmapElement, false);
     }
 
     if (this.mindmapDragPreview) {
@@ -601,48 +698,7 @@ export class Renderer {
     return this.selectionAnimProgress < 1;
   }
 
-  render(
-    elements: Element[],
-    selectedIds: string[],
-    bgColor: string,
-    showGrid: boolean,
-    gridSize: number,
-    activeElement?: Element | null,
-    selectionBox?: SelectionBox | null,
-    snapGuides?: SnapGuide[],
-    hoveredElementId?: string | null,
-    hoveredAnchor?: ConnectionAnchorDescriptor | null,
-    activeAnchors?: ConnectionAnchorDescriptor[],
-    activeDrawingTool?: string | null,
-    selectedMindmapNode?: { elementId: string; nodeId: string } | null,
-    hoveredConnectionElementId?: string | null,
-    editingElementId?: string | null,
-    editingMindmapNodeId?: string | null,
-    mindmapDropTarget?: { elementId: string; nodeId: string } | null,
-    mindmapDragPreview?: MindmapDragPreview | null,
-  ) {
-    this.renderSceneLayer(elements, bgColor, showGrid, gridSize, editingElementId, editingMindmapNodeId);
-    this.renderOverlayLayer({
-      geometryElements: elements,
-      selectedIds,
-      activeElement,
-      selectionBox,
-      snapGuides,
-      hoveredElementId,
-      hoveredAnchor,
-      activeAnchors,
-      activeDrawingTool,
-      selectedMindmapNode,
-      hoveredConnectionElementId,
-      editingElementId,
-      editingMindmapNodeId,
-      mindmapDropTarget,
-      mindmapDragPreview,
-    });
-  }
-
-  renderConnectionPoints(
-    _elements: Element[],
+  private renderConnectionPoints(
     hoveredElementId: string | null,
     hoveredAnchor: ConnectionAnchorDescriptor | null,
     activeAnchors: ConnectionAnchorDescriptor[],
@@ -725,14 +781,14 @@ export class Renderer {
   }
 
   private renderLassoHighlight(el: Element) {
-    drawLassoHighlight(this.ctx, el, this.viewport, this.sceneIndex, (m) => this.getMindmapBounds(m));
+    drawLassoHighlight(this.ctx, el, this.getElementBounds(el), this.viewport.zoom);
   }
 
-  renderElement(el: Element, _isSelected: boolean, opacityMultiplier = 1) {
+  private renderElement(el: Element) {
     const ctx = this.ctx;
 
     ctx.save();
-    ctx.globalAlpha = (el.opacity / 100) * opacityMultiplier;
+    ctx.globalAlpha = el.opacity / 100;
 
     if (el.angle !== 0) {
       const cx = el.x + el.width / 2;
@@ -782,7 +838,7 @@ export class Renderer {
         this.renderFrame(el);
         break;
       default:
-        this.renderRectangle(el as any);
+        this.renderRectangle(el as Element);
     }
 
     ctx.restore();
@@ -923,7 +979,9 @@ export class Renderer {
     ctx.save();
     ctx.translate(el.x, el.y);
     ctx.fillStyle = el.highlightColor;
-    ctx.globalCompositeOperation = 'multiply';
+    // Multiply tints ink on a light page, but on the dark canvas it would
+    // darken toward black and vanish; there the color's own alpha is used.
+    if (!canvasTheme.isDark) ctx.globalCompositeOperation = 'multiply';
     ctx.fill(path);
     ctx.restore();
   }
@@ -1019,7 +1077,7 @@ export class Renderer {
     if (el.strokeWidth > 0 && el.strokeColor !== 'transparent') {
       ctx.strokeStyle = el.strokeColor;
       ctx.lineWidth = el.strokeWidth;
-      this.applyStrokeStyle(ctx, el.strokeStyle);
+      applyStrokeStyle(ctx, el.strokeStyle);
       ctx.strokeRect(el.x, el.y, el.width, el.height);
     }
   }
@@ -1029,7 +1087,6 @@ export class Renderer {
     return {
       ctx: this.ctx,
       zoom: this.viewport.zoom,
-      interactiveChrome: this.interactiveChrome,
       selectedMindmapNode: this.selectedMindmapNode,
       mindmapDropTarget: this.mindmapDropTarget,
       editingMindmapNodeId: this.editingMindmapNodeId,
@@ -1044,6 +1101,24 @@ export class Renderer {
     if (!el.rootNode) return;
     const layout = this.getMindmapLayout(el);
     drawMindmap(this.mindmapDrawDeps(), el, layout);
+  }
+
+  /** Selected-node / drop-target rings for a mindmap, drawn on the overlay. */
+  private renderMindmapChrome(el: MindmapElement, showSelectedNode: boolean) {
+    if (!el.rootNode) return;
+    const deps = this.mindmapDrawDeps();
+    if (!showSelectedNode) deps.selectedMindmapNode = null;
+    const ctx = this.ctx;
+    ctx.save();
+    if (el.angle !== 0) {
+      const cx = el.x + el.width / 2;
+      const cy = el.y + el.height / 2;
+      ctx.translate(cx, cy);
+      ctx.rotate(el.angle);
+      ctx.translate(-cx, -cy);
+    }
+    drawMindmapChrome(deps, el, this.getMindmapLayout(el));
+    ctx.restore();
   }
 
   private renderMindmapDragPreview(preview: { elementId: string; sourceNodeId: string; pointerX: number; pointerY: number; offsetX: number; offsetY: number }) {
@@ -1062,64 +1137,35 @@ export class Renderer {
       ctx.translate(-cx, -cy);
     }
 
-    const isLinear = el.type === 'line' || el.type === 'arrow';
-    if (isLinear) {
-      const bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fillRect(bounds.x - 1, bounds.y - 1, bounds.width + 2, bounds.height + 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(bounds.x - 1, bounds.y - 1, bounds.width + 2, bounds.height + 2);
-    } else if (el.type === 'ellipse') {
+    ctx.fillStyle = canvasTheme.hoverFill;
+    ctx.strokeStyle = canvasTheme.hoverStroke;
+    ctx.lineWidth = 1 / this.viewport.zoom;
+    ctx.beginPath();
+    if (el.type === 'ellipse') {
       const cx = el.x + el.width / 2;
       const cy = el.y + el.height / 2;
-      ctx.beginPath();
       ctx.ellipse(cx, cy, Math.abs(el.width / 2) + 1, Math.abs(el.height / 2) + 1, 0, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.stroke();
     } else if (el.type === 'diamond') {
       const cx = el.x + el.width / 2;
       const cy = el.y + el.height / 2;
-      ctx.beginPath();
       ctx.moveTo(cx, el.y - 1);
       ctx.lineTo(el.x + el.width + 1, cy);
       ctx.lineTo(cx, el.y + el.height + 1);
       ctx.lineTo(el.x - 1, cy);
       ctx.closePath();
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.stroke();
     } else if (el.type === 'triangle') {
-      ctx.beginPath();
       ctx.moveTo(el.x + el.width / 2, el.y - 1);
       ctx.lineTo(el.x + el.width + 1, el.y + el.height + 1);
       ctx.lineTo(el.x - 1, el.y + el.height + 1);
       ctx.closePath();
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.stroke();
-    } else if (el.type === 'mindmap') {
-      const bounds = this.getMindmapBounds(el as MindmapElement);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fillRect(bounds.x - 1, bounds.y - 1, bounds.width + 2, bounds.height + 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(bounds.x - 1, bounds.y - 1, bounds.width + 2, bounds.height + 2);
     } else {
-      // Generic bbox highlight for rectangles, variant shapes, freedraw, text, image, sticky, frame, section
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fillRect(el.x - 1, el.y - 1, el.width + 2, el.height + 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      ctx.lineWidth = 1 / this.viewport.zoom;
-      ctx.strokeRect(el.x - 1, el.y - 1, el.width + 2, el.height + 2);
+      // Bounding-box highlight for connectors, mindmaps, rectangles, variant
+      // shapes, freedraw, text, image, sticky, frame and section.
+      const bounds = this.getElementBounds(el);
+      ctx.rect(bounds.x - 1, bounds.y - 1, bounds.width + 2, bounds.height + 2);
     }
+    ctx.fill();
+    ctx.stroke();
 
     ctx.restore();
   }
@@ -1130,7 +1176,7 @@ export class Renderer {
    * multi-select). Draws the shared bounding box in the single-selection style;
    * per-group resize handles are intentionally not drawn here.
    */
-  private renderSelectionBoxForBounds(bounds: { x: number; y: number; width: number; height: number }) {
+  private renderSelectionBoxForBounds(bounds: Bounds) {
     const ctx = this.ctx;
     const padding = 4;
     const progress = this.selectionAnimProgress;
@@ -1162,14 +1208,7 @@ export class Renderer {
   private renderSelectionBox(el: Element) {
     const ctx = this.ctx;
     const isLinear = el.type === 'line' || el.type === 'arrow';
-    let bounds: { x: number; y: number; width: number; height: number };
-    if (isLinear) {
-      bounds = getLinearBounds(el as LinearElement, this.sceneIndex);
-    } else if (el.type === 'mindmap') {
-      bounds = this.getMindmapBounds(el as MindmapElement);
-    } else {
-      bounds = { x: el.x, y: el.y, width: el.width, height: el.height };
-    }
+    const bounds = this.getElementBounds(el);
 
     const progress = this.selectionAnimProgress;
     const alpha = 0.5 + 0.5 * progress;
@@ -1247,10 +1286,6 @@ export class Renderer {
     ctx.restore();
   }
 
-  private applyStrokeStyle(ctx: CanvasRenderingContext2D, style: string) {
-    applyStrokeStyleShared(ctx, style);
-  }
-
   getMindmapNodeAtPoint(el: MindmapElement, x: number, y: number): MindmapNode | null {
     if (!el.rootNode) return null;
 
@@ -1261,12 +1296,7 @@ export class Renderer {
     while (stack.length > 0) {
       const current = stack.pop()!;
       nodes.push(current);
-      const children = [
-        ...(current.collapsed ? [] : current.children),
-        ...(current.collapsed ? [] : (current.leftChildren || [])),
-        ...(current.collapsed ? [] : (current.rightChildren || [])),
-      ];
-      for (const child of children) {
+      for (const child of visibleChildrenOf(current)) {
         stack.push(child);
       }
     }

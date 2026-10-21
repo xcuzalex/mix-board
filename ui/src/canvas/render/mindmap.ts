@@ -11,7 +11,14 @@
 import type { Element, MindmapElement, MindmapNode } from '../../types/element';
 import { THEME } from '../../utils/color';
 import type { SceneIndex } from '../linear';
-import { type Rect, type MeasureNode, layoutMindmapNodes, mindmapNodeFont } from './mindmap-layout';
+import {
+  type Rect,
+  type MeasureNode,
+  childrenOf,
+  layoutMindmapNodes,
+  mindmapNodeFont,
+  visibleChildrenOf,
+} from './mindmap-layout';
 import { canvasTheme } from '../canvas-theme';
 
 // --- Branch styling ---------------------------------------------------------
@@ -30,13 +37,14 @@ const ROOT_FILL = '#1E3A32';
 const isAutoColor = (value: string | undefined, fallback: string) =>
   !value || value.toLowerCase() === fallback.toLowerCase();
 
-function childrenOf(node: MindmapNode): MindmapNode[] {
-  return [...node.children, ...(node.leftChildren ?? []), ...(node.rightChildren ?? [])];
-}
-
 const branchColorCache = new WeakMap<MindmapNode, Map<string, string>>();
 
-/** node id -> branch color (root tree objects are immutable, so cache by identity). */
+/**
+ * node id -> branch color (root tree objects are immutable, so cache by identity).
+ * Colors follow `childrenOf(root)` order, which for the auto-split 左右 layout is
+ * the clockwise order around the root (see getMindmapSides), so neighbouring
+ * branches keep distinct colors on both sides.
+ */
 function getBranchColors(root: MindmapNode): Map<string, string> {
   const cached = branchColorCache.get(root);
   if (cached) return cached;
@@ -50,9 +58,15 @@ function getBranchColors(root: MindmapNode): Map<string, string> {
   return colors;
 }
 
+const descendantCountCache = new WeakMap<MindmapNode, number>();
+
+/** Number of topics under a node (collapsed ones included), cached by node identity. */
 function countDescendants(node: MindmapNode): number {
+  const cached = descendantCountCache.get(node);
+  if (cached !== undefined) return cached;
   let count = 0;
   for (const child of childrenOf(node)) count += 1 + countDescendants(child);
+  descendantCountCache.set(node, count);
   return count;
 }
 
@@ -70,7 +84,6 @@ export interface MindmapDrawDeps {
   ctx: CanvasRenderingContext2D;
   /** viewport.zoom, snapshotted for the render pass. */
   zoom: number;
-  interactiveChrome: boolean;
   selectedMindmapNode: MindmapNodeRef | null;
   mindmapDropTarget: MindmapNodeRef | null;
   editingMindmapNodeId: string | null;
@@ -121,11 +134,7 @@ function drawMindmapConnections(deps: MindmapDrawDeps, el: MindmapElement, node:
     ctx.setLineDash([]);
   }
 
-  const allChildren = [
-    ...(node.collapsed ? [] : node.children),
-    ...(node.collapsed ? [] : (node.leftChildren || [])),
-    ...(node.collapsed ? [] : (node.rightChildren || [])),
-  ].filter((child) => !isDragged(deps, el.id, child.id));
+  const allChildren = visibleChildrenOf(node).filter((child) => !isDragged(deps, el.id, child.id));
 
   for (const child of allChildren) {
     ctx.strokeStyle = autoLine ? (branchColors.get(child.id) ?? style.color) : style.color;
@@ -177,13 +186,6 @@ function drawMindmapNode(deps: MindmapDrawDeps, el: MindmapElement, node: Mindma
   if (isDragged(deps, el.id, node.id)) return;
   const ctx = deps.ctx;
   const { x, y, w, h } = getNodeRect(layout, node, el.x, el.y);
-  const isSelectedNode = deps.interactiveChrome
-    && deps.selectedMindmapNode?.elementId === el.id
-    && deps.selectedMindmapNode.nodeId === node.id
-    && deps.editingMindmapNodeId !== node.id;
-  const isDropTargetNode = deps.interactiveChrome
-    && deps.mindmapDropTarget?.elementId === el.id
-    && deps.mindmapDropTarget.nodeId === node.id;
 
   const isRoot = node.id === el.rootNode.id;
   const branchColor = getBranchColors(el.rootNode).get(node.id) ?? BRANCH_PALETTE[0];
@@ -236,38 +238,6 @@ function drawMindmapNode(deps: MindmapDrawDeps, el: MindmapElement, node: Mindma
     ctx.fillText(node.text || '主题', x + w / 2, y + h / 2, w - 8);
   }
 
-  if (isSelectedNode) {
-    ctx.save();
-    ctx.beginPath();
-    if (node.nodeShape === 'text') {
-      ctx.roundRect(x - 4, y - 4, w + 8, h + 8, 8);
-    } else {
-      const radius = node.nodeShape === 'pill' ? h / 2 + 4 : 10;
-      ctx.roundRect(x - 4, y - 4, w + 8, h + 8, radius);
-    }
-    ctx.strokeStyle = THEME.selected;
-    ctx.lineWidth = 2 / deps.zoom;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  if (isDropTargetNode) {
-    ctx.save();
-    ctx.beginPath();
-    if (node.nodeShape === 'text') {
-      ctx.roundRect(x - 6, y - 6, w + 12, h + 12, 10);
-    } else {
-      const radius = node.nodeShape === 'pill' ? (h + 12) / 2 : 12;
-      ctx.roundRect(x - 6, y - 6, w + 12, h + 12, radius);
-    }
-    ctx.strokeStyle = '#16A34A';
-    ctx.lineWidth = 2 / deps.zoom;
-    ctx.setLineDash([6 / deps.zoom, 4 / deps.zoom]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
   // Count badge on the outer edge: how many topics sit under this node.
   // Solid when collapsed (children hidden), outlined when expanded.
   const descendants = isRoot ? 0 : countDescendants(node);
@@ -296,13 +266,64 @@ function drawMindmapNode(deps: MindmapDrawDeps, el: MindmapElement, node: Mindma
     ctx.restore();
   }
 
-  const allChildren = [
-    ...(node.collapsed ? [] : node.children),
-    ...(node.collapsed ? [] : (node.leftChildren || [])),
-    ...(node.collapsed ? [] : (node.rightChildren || [])),
-  ].filter((child) => !isDragged(deps, el.id, child.id));
-  for (const child of allChildren) {
+  for (const child of visibleChildrenOf(node)) {
+    if (isDragged(deps, el.id, child.id)) continue;
     drawMindmapNode(deps, el, child, layout);
+  }
+}
+
+/**
+ * Interactive chrome for one mindmap, drawn on the overlay layer on top of the
+ * scene-layer mindmap: the selected-node ring and the drag drop-target ring.
+ * Only the rings are drawn (not the whole tree), so element opacity is never
+ * composited twice.
+ */
+export function drawMindmapChrome(deps: MindmapDrawDeps, el: MindmapElement, layout: Map<string, Rect>) {
+  if (!el.rootNode) return;
+  const ctx = deps.ctx;
+
+  const selected = deps.selectedMindmapNode;
+  if (selected?.elementId === el.id && deps.editingMindmapNodeId !== selected.nodeId) {
+    const node = findMindmapNode(el.rootNode, selected.nodeId);
+    const rect = node ? layout.get(node.id) : undefined;
+    if (node && rect) {
+      const { x, y, w, h } = rect;
+      ctx.save();
+      ctx.beginPath();
+      if (node.nodeShape === 'text') {
+        ctx.roundRect(x - 4, y - 4, w + 8, h + 8, 8);
+      } else {
+        const radius = node.nodeShape === 'pill' ? h / 2 + 4 : 10;
+        ctx.roundRect(x - 4, y - 4, w + 8, h + 8, radius);
+      }
+      ctx.strokeStyle = THEME.selected;
+      ctx.lineWidth = 2 / deps.zoom;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  const dropTarget = deps.mindmapDropTarget;
+  if (dropTarget?.elementId === el.id) {
+    const node = findMindmapNode(el.rootNode, dropTarget.nodeId);
+    const rect = node ? layout.get(node.id) : undefined;
+    if (node && rect) {
+      const { x, y, w, h } = rect;
+      ctx.save();
+      ctx.beginPath();
+      if (node.nodeShape === 'text') {
+        ctx.roundRect(x - 6, y - 6, w + 12, h + 12, 10);
+      } else {
+        const radius = node.nodeShape === 'pill' ? (h + 12) / 2 : 12;
+        ctx.roundRect(x - 6, y - 6, w + 12, h + 12, radius);
+      }
+      ctx.strokeStyle = '#16A34A';
+      ctx.lineWidth = 2 / deps.zoom;
+      ctx.setLineDash([6 / deps.zoom, 4 / deps.zoom]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
   }
 }
 
@@ -406,8 +427,7 @@ function extractMindmapNodePreview(root: MindmapNode, nodeId: string): { root: M
 
 function findMindmapNode(root: MindmapNode, nodeId: string): MindmapNode | null {
   if (root.id === nodeId) return root;
-  const allChildren = [...root.children, ...(root.leftChildren || []), ...(root.rightChildren || [])];
-  for (const child of allChildren) {
+  for (const child of childrenOf(root)) {
     const found = findMindmapNode(child, nodeId);
     if (found) return found;
   }
@@ -451,13 +471,7 @@ function drawMindmapGhostConnections(deps: MindmapDrawDeps, el: MindmapElement, 
   ctx.lineJoin = 'round';
   ctx.setLineDash([]);
 
-  const allChildren = [
-    ...(node.collapsed ? [] : node.children),
-    ...(node.collapsed ? [] : (node.leftChildren || [])),
-    ...(node.collapsed ? [] : (node.rightChildren || [])),
-  ];
-
-  for (const child of allChildren) {
+  for (const child of visibleChildrenOf(node)) {
     const cr = getShiftedNodeRect(layout, child, 0, 0, dx, dy);
     const isLeft = cr.x + cr.w < nr.x;
 
@@ -509,13 +523,7 @@ function drawMindmapGhostSubtree(deps: MindmapDrawDeps, el: MindmapElement, node
   const { x, y, w, h } = getShiftedNodeRect(layout, node, el.x, el.y, dx, dy);
   drawMindmapGhostNode(deps, node, x, y, w, h);
 
-  const allChildren = [
-    ...(node.collapsed ? [] : node.children),
-    ...(node.collapsed ? [] : (node.leftChildren || [])),
-    ...(node.collapsed ? [] : (node.rightChildren || [])),
-  ];
-
-  for (const child of allChildren) {
+  for (const child of visibleChildrenOf(node)) {
     drawMindmapGhostSubtree(deps, el, child, layout, dx, dy);
   }
 }
