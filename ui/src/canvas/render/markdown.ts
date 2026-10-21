@@ -111,6 +111,203 @@ function parseBlocks(source: string, base: number): Block[] {
   return blocks;
 }
 
+// --- Layout (parse + measure) -------------------------------------------------
+// Laying Markdown out tokenises every line and calls measureText per word, which
+// is far too much work to redo on every pan / zoom frame. The layout is computed
+// once at the origin and cached per (text, width, font, size); painting replays
+// it at the requested position. Font loads invalidate the cache (they change the
+// measurements) via invalidateMarkdownLayoutCache().
+
+/** Draw roles; quote / done text and the quote bar derive from the text color. */
+type TextRole = 'base' | 'link' | 'quote' | 'done';
+
+type LayoutOp =
+  | { kind: 'text'; text: string; font: string; x: number; y: number; role: TextRole }
+  | { kind: 'bullet'; font: string; x: number; y: number }
+  | { kind: 'checkbox'; x: number; y: number; size: number; done: boolean }
+  | { kind: 'quoteBar'; x: number; y: number; h: number };
+
+interface MarkdownLayout {
+  ops: LayoutOp[];
+  /** Link regions relative to the layout origin. */
+  hits: LinkHit[];
+  width: number;
+  height: number;
+}
+
+/** Alpha applied to the text color for derived roles (works for any CSS color format). */
+const ROLE_ALPHA: Record<TextRole, number> = { base: 1, link: 1, quote: 0.6, done: 0.45 };
+const QUOTE_BAR_ALPHA = 0.25;
+const DONE_COLOR = '#007AFF';
+
+const MAX_LAYOUTS = 500;
+const layoutCache = new Map<string, MarkdownLayout>();
+
+/** Drops cached layouts; call when web fonts finish loading (measurements change). */
+export function invalidateMarkdownLayoutCache() {
+  layoutCache.clear();
+}
+
+function computeLayout(
+  ctx: CanvasRenderingContext2D,
+  source: string,
+  width: number,
+  fontSize: number,
+  fontFamily: string,
+): MarkdownLayout {
+  const blocks = parseBlocks(source, fontSize);
+  const ops: LayoutOp[] = [];
+  const hits: LinkHit[] = [];
+  let y = 0;
+  let maxRight = 0;
+
+  for (const block of blocks) {
+    y += block.spacingBefore;
+    const lineHeight = block.size * 1.45;
+
+    if (block.runs.length === 0) {
+      y += lineHeight * 0.6;
+      continue;
+    }
+
+    const left = block.indent;
+    const maxX = width;
+
+    // Block marker (bullet / checkbox) on the first line.
+    if (block.marker === 'bullet') {
+      ops.push({ kind: 'bullet', font: `${block.size}px ${fontFamily}`, x: block.size * 0.3, y });
+    } else if (block.marker === 'todo' || block.marker === 'done') {
+      const bs = block.size * 0.82;
+      ops.push({ kind: 'checkbox', x: 1, y: y + (block.size - bs) / 2 + 1, size: bs, done: block.marker === 'done' });
+    }
+
+    if (block.quote) {
+      ops.push({ kind: 'quoteBar', x: 0, y, h: lineHeight });
+    }
+
+    const role: TextRole = block.quote ? 'quote' : block.marker === 'done' ? 'done' : 'base';
+
+    // Lay out inline runs with word wrap; consecutive words of one run on one
+    // line merge into a single fillText.
+    let cursorX = left;
+    let lastOp: Extract<LayoutOp, { kind: 'text' }> | null = null;
+    let lastRun: InlineRun | null = null;
+    const placeWord = (word: string, run: InlineRun) => {
+      const font = runFont(run, block.size, block.weight, fontFamily);
+      ctx.font = font;
+      const w = ctx.measureText(word).width;
+      if (cursorX + w > maxX && cursorX > left) {
+        y += lineHeight;
+        cursorX = left;
+        lastOp = null;
+      }
+      if (lastOp && lastRun === run && lastOp.y === y) {
+        lastOp.text += word;
+      } else {
+        lastOp = { kind: 'text', text: word, font, x: cursorX, y, role: run.link ? 'link' : role };
+        lastRun = run;
+        ops.push(lastOp);
+      }
+      if (run.link && word.trim()) {
+        hits.push({ name: run.text, x: cursorX, y, w, h: block.size * 1.3 });
+      }
+      cursorX += w;
+      if (word.trim()) maxRight = Math.max(maxRight, cursorX);
+    };
+
+    for (const run of block.runs) {
+      // Split into words but keep spaces so wrapping works naturally.
+      const parts = run.text.split(/(\s+)/u);
+      for (const part of parts) {
+        if (part === '') continue;
+        placeWord(part, run);
+      }
+    }
+    y += lineHeight;
+  }
+
+  return { ops, hits, width: maxRight, height: y };
+}
+
+function getLayout(
+  ctx: CanvasRenderingContext2D,
+  source: string,
+  width: number,
+  fontSize: number,
+  fontFamily: string,
+): MarkdownLayout {
+  const key = `${width}|${fontSize}|${fontFamily}|${source}`;
+  const hit = layoutCache.get(key);
+  if (hit) {
+    layoutCache.delete(key);
+    layoutCache.set(key, hit);
+    return hit;
+  }
+  ctx.save();
+  const layout = computeLayout(ctx, source, width, fontSize, fontFamily);
+  ctx.restore();
+  layoutCache.set(key, layout);
+  if (layoutCache.size > MAX_LAYOUTS) {
+    const oldest = layoutCache.keys().next().value;
+    if (oldest !== undefined) layoutCache.delete(oldest);
+  }
+  return layout;
+}
+
+function paintLayout(ctx: CanvasRenderingContext2D, layout: MarkdownLayout, ox: number, oy: number, color: string) {
+  const baseAlpha = ctx.globalAlpha;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  for (const op of layout.ops) {
+    switch (op.kind) {
+      case 'text':
+        ctx.font = op.font;
+        ctx.fillStyle = op.role === 'link' ? LINK_COLOR : color;
+        ctx.globalAlpha = baseAlpha * ROLE_ALPHA[op.role];
+        ctx.fillText(op.text, ox + op.x, oy + op.y);
+        break;
+      case 'bullet':
+        ctx.font = op.font;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = baseAlpha;
+        ctx.fillText('•', ox + op.x, oy + op.y);
+        break;
+      case 'quoteBar':
+        ctx.fillStyle = color;
+        ctx.globalAlpha = baseAlpha * QUOTE_BAR_ALPHA;
+        ctx.fillRect(ox + op.x, oy + op.y, 2.5, op.h);
+        break;
+      case 'checkbox': {
+        const bx = ox + op.x;
+        const by = oy + op.y;
+        const bs = op.size;
+        ctx.globalAlpha = baseAlpha;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bs, bs, 3);
+        if (op.done) {
+          ctx.fillStyle = DONE_COLOR;
+          ctx.fill();
+          ctx.strokeStyle = DONE_COLOR;
+          ctx.stroke();
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(bx + bs * 0.24, by + bs * 0.52);
+          ctx.lineTo(bx + bs * 0.43, by + bs * 0.72);
+          ctx.lineTo(bx + bs * 0.78, by + bs * 0.28);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = color;
+          ctx.stroke();
+        }
+        break;
+      }
+    }
+  }
+  ctx.globalAlpha = baseAlpha;
+}
+
 /**
  * Draws Markdown and returns the content size. Collects [[link]] hit regions
  * when `hits` is given. With `measureOnly`, lays out without painting (used to
@@ -123,97 +320,19 @@ export function drawMarkdown(
   opts: MarkdownOptions & { measureOnly?: boolean },
   hits?: LinkHit[],
 ): { width: number; height: number } {
-  const { x, width, fontSize, fontFamily, color } = opts;
-  const paint = !opts.measureOnly;
-  const blocks = parseBlocks(source, fontSize);
-  let y = opts.y;
-  let maxRight = x;
+  const { x, y, width, fontSize, fontFamily, color } = opts;
+  const layout = getLayout(ctx, source, width, fontSize, fontFamily);
 
-  ctx.save();
-  for (const block of blocks) {
-    y += block.spacingBefore;
-    const lineHeight = block.size * 1.45;
-
-    if (block.runs.length === 0) {
-      y += lineHeight * 0.6;
-      continue;
-    }
-
-    const left = x + block.indent;
-    const maxX = x + width;
-
-    // Block marker (bullet / checkbox) on the first line.
-    ctx.textBaseline = 'top';
-    if (!paint) {
-      // Markers only affect indentation, already captured by `left`.
-    } else if (block.marker === 'bullet') {
-      ctx.fillStyle = color;
-      ctx.font = `${block.size}px ${fontFamily}`;
-      ctx.fillText('•', x + block.size * 0.3, y);
-    } else if (block.marker === 'todo' || block.marker === 'done') {
-      const bs = block.size * 0.82;
-      const by = y + (block.size - bs) / 2 + 1;
-      ctx.strokeStyle = block.marker === 'done' ? '#007AFF' : color;
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.roundRect(x + 1, by, bs, bs, 3);
-      ctx.stroke();
-      if (block.marker === 'done') {
-        ctx.fillStyle = '#007AFF';
-        ctx.beginPath();
-        ctx.roundRect(x + 1, by, bs, bs, 3);
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.moveTo(x + 1 + bs * 0.24, by + bs * 0.52);
-        ctx.lineTo(x + 1 + bs * 0.43, by + bs * 0.72);
-        ctx.lineTo(x + 1 + bs * 0.78, by + bs * 0.28);
-        ctx.stroke();
-      }
-    }
-
-    if (block.quote && paint) {
-      ctx.fillStyle = 'rgba(0,0,0,0.12)';
-      ctx.fillRect(x, y, 2.5, lineHeight);
-    }
-
-    // Lay out inline runs with word wrap.
-    let cursorX = left;
-    const drawWord = (word: string, run: InlineRun) => {
-      ctx.font = runFont(run, block.size, block.weight, fontFamily);
-      const w = ctx.measureText(word).width;
-      if (cursorX + w > maxX && cursorX > left) {
-        y += lineHeight;
-        cursorX = left;
-      }
-      if (paint) {
-        ctx.fillStyle = run.link
-          ? LINK_COLOR
-          : block.quote ? 'rgba(0,0,0,0.5)' : (block.marker === 'done' ? 'rgba(0,0,0,0.4)' : color);
-        ctx.textBaseline = 'top';
-        ctx.fillText(word, cursorX, y);
-      }
-      if (run.link && hits && word.trim()) {
-        hits.push({ name: run.text, x: cursorX, y, w, h: block.size * 1.3 });
-      }
-      cursorX += w;
-      if (word.trim()) maxRight = Math.max(maxRight, cursorX);
-    };
-
-    for (const run of block.runs) {
-      // Split into words but keep spaces so wrapping works naturally.
-      const parts = run.text.split(/(\s+)/u);
-      for (const part of parts) {
-        if (part === '') continue;
-        drawWord(part, run);
-      }
-    }
-    y += lineHeight;
+  if (!opts.measureOnly) {
+    ctx.save();
+    paintLayout(ctx, layout, x, y, color);
+    ctx.restore();
   }
-  ctx.restore();
+  if (hits) {
+    for (const h of layout.hits) hits.push({ name: h.name, x: x + h.x, y: y + h.y, w: h.w, h: h.h });
+  }
 
-  return { width: maxRight - x, height: y - opts.y };
+  return { width: layout.width, height: layout.height };
 }
 
 let measureCtx: CanvasRenderingContext2D | null = null;

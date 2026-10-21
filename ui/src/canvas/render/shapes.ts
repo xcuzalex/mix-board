@@ -9,9 +9,84 @@
  */
 import type { Element } from '../../types/element';
 import type { RoughCanvas } from 'roughjs/bin/canvas';
-import type { Options } from 'roughjs/bin/core';
-import { getElementShapeVariant, renderShapeDecoration } from '../shape-utils';
+import type { Drawable, Options } from 'roughjs/bin/core';
+import type { RoughGenerator } from 'roughjs/bin/generator';
+import { getElementShapeVariant, getShapePathData, renderShapeDecoration } from '../shape-utils';
 import { applyStrokeStyle } from './stroke';
+
+// --- rough.js drawable cache -------------------------------------------------
+// Generating a sketch (rough's generator) is the expensive part; drawing a
+// Drawable is cheap. Drawables are built at the origin and drawn translated, so
+// moving an element reuses its sketch and only size / style changes regenerate.
+const MAX_DRAWABLES = 1000;
+const drawableCache = new Map<string, Drawable>();
+
+function getCachedDrawable(key: string, build: () => Drawable): Drawable {
+  const hit = drawableCache.get(key);
+  if (hit) {
+    // LRU: re-insert so the entry becomes the most recently used.
+    drawableCache.delete(key);
+    drawableCache.set(key, hit);
+    return hit;
+  }
+  const drawable = build();
+  drawableCache.set(key, drawable);
+  if (drawableCache.size > MAX_DRAWABLES) {
+    const oldest = drawableCache.keys().next().value;
+    if (oldest !== undefined) drawableCache.delete(oldest);
+  }
+  return drawable;
+}
+
+type RoughShapeKind = 'rectangle' | 'round_rectangle' | 'pill' | 'ellipse' | 'diamond' | 'triangle';
+
+function buildRoughShape(
+  gen: RoughGenerator,
+  kind: RoughShapeKind,
+  w: number,
+  h: number,
+  roundness: number,
+  opts: Options,
+): Drawable {
+  switch (kind) {
+    case 'rectangle':
+      return gen.rectangle(0, 0, w, h, opts);
+    case 'round_rectangle':
+    case 'pill':
+      // Rough path over the same rounded-rect outline the crisp renderer uses,
+      // so `roundness` (and the pill's full radius) shows in the sketch.
+      return gen.path(getShapePathData(kind, 0, 0, w, h, roundness), opts);
+    case 'ellipse':
+      return gen.ellipse(w / 2, h / 2, Math.abs(w), Math.abs(h), opts);
+    case 'diamond':
+      return gen.polygon([[w / 2, 0], [w, h / 2], [w / 2, h], [0, h / 2]], opts);
+    case 'triangle':
+      return gen.polygon([[w / 2, 0], [w, h], [0, h]], opts);
+  }
+}
+
+/** Draws a basic shape as a cached rough.js sketch, translated to the element. */
+function drawRoughShape(
+  ctx: CanvasRenderingContext2D,
+  rc: RoughCanvas,
+  el: Element & { roundness?: number },
+  kind: RoughShapeKind,
+) {
+  const seed = seedFromId(el.id);
+  const roundness = el.roundness ?? 8;
+  const key = [
+    el.id, kind, el.width, el.height, roundness,
+    el.strokeColor, el.strokeWidth, el.strokeStyle, el.backgroundColor, seed,
+  ].join('|');
+  const drawable = getCachedDrawable(
+    key,
+    () => buildRoughShape(rc.generator, kind, el.width, el.height, roundness, roughOptions(el, seed)),
+  );
+  ctx.save();
+  ctx.translate(el.x, el.y);
+  rc.draw(drawable);
+  ctx.restore();
+}
 
 /** Cache-backed Path2D builder owned by the Renderer instance. */
 export type GetShapePath = (variant: string, width: number, height: number, roundness: number) => Path2D;
@@ -112,7 +187,7 @@ export function drawRectangle(
     drawVariantShape(ctx, el, editingElementId, getShapePath);
     return;
   }
-  rc.rectangle(el.x, el.y, el.width, el.height, roughOptions(el, seedFromId(el.id)));
+  drawRoughShape(ctx, rc, el, variant);
   drawShapeText(ctx, el, editingElementId);
 }
 
@@ -128,9 +203,7 @@ export function drawEllipse(
     drawVariantShape(ctx, el, editingElementId, getShapePath);
     return;
   }
-  const cx = el.x + el.width / 2;
-  const cy = el.y + el.height / 2;
-  rc.ellipse(cx, cy, Math.abs(el.width), Math.abs(el.height), roughOptions(el, seedFromId(el.id)));
+  drawRoughShape(ctx, rc, el, 'ellipse');
   drawShapeText(ctx, el, editingElementId);
 }
 
@@ -146,17 +219,7 @@ export function drawDiamond(
     drawVariantShape(ctx, el, editingElementId, getShapePath);
     return;
   }
-  const cx = el.x + el.width / 2;
-  const cy = el.y + el.height / 2;
-  rc.polygon(
-    [
-      [cx, el.y],
-      [el.x + el.width, cy],
-      [cx, el.y + el.height],
-      [el.x, cy],
-    ],
-    roughOptions(el, seedFromId(el.id)),
-  );
+  drawRoughShape(ctx, rc, el, 'diamond');
   drawShapeText(ctx, el, editingElementId);
 }
 
@@ -172,13 +235,6 @@ export function drawTriangle(
     drawVariantShape(ctx, el, editingElementId, getShapePath);
     return;
   }
-  rc.polygon(
-    [
-      [el.x + el.width / 2, el.y],
-      [el.x + el.width, el.y + el.height],
-      [el.x, el.y + el.height],
-    ],
-    roughOptions(el, seedFromId(el.id)),
-  );
+  drawRoughShape(ctx, rc, el, 'triangle');
   drawShapeText(ctx, el, editingElementId);
 }

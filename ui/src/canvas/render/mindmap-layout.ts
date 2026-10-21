@@ -1,11 +1,12 @@
 /**
- * Mindmap layout engine — the pure tree layout algorithm and its cache
- * signature. Extracted from renderer.ts (P0.B). No canvas/ctx here: node
- * measurement is injected as `measure`, so this module is pure geometry and is
- * the piece reused by the outline <-> mindmap work (P2).
+ * Mindmap layout engine — the pure tree layout algorithm. Extracted from
+ * renderer.ts (P0.B). No canvas/ctx here: node measurement is injected as
+ * `measure`, so this module is pure geometry and is the piece reused by the
+ * outline <-> mindmap work (P2).
  *
- * The Renderer still owns layout caching (signature compare + shift) and the
- * ctx-backed `measure` implementation; it calls these functions.
+ * The Renderer still owns layout caching (keyed by root-node identity, with a
+ * shift when the element moves) and the ctx-backed `measure` implementation; it
+ * calls these functions.
  */
 import type { MindmapElement, MindmapNode } from '../../types/element';
 
@@ -49,26 +50,43 @@ export function getLayoutBounds(layout: Map<string, Rect>): { x: number; y: numb
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
-/** Structural signature used to invalidate the layout cache when the tree changes. */
-export function getMindmapLayoutSignature(el: MindmapElement): string {
-  const visit = (node: MindmapNode): string => {
-    const children = node.children.map(visit).join(',');
-    const leftChildren = (node.leftChildren || []).map(visit).join(',');
-    const rightChildren = (node.rightChildren || []).map(visit).join(',');
-    return [
-      node.id,
-      node.text,
-      node.fontSize,
-      node.nodeShape,
-      node.nodeType,
-      node.collapsed ? 1 : 0,
-      `[${children}]`,
-      `[${leftChildren}]`,
-      `[${rightChildren}]`,
-    ].join('|');
-  };
+/** Every child list of a node (main + explicit left/right sides), ignoring collapse. */
+export function childrenOf(node: MindmapNode): MindmapNode[] {
+  const left = node.leftChildren ?? [];
+  const right = node.rightChildren ?? [];
+  if (left.length === 0 && right.length === 0) return node.children;
+  return [...node.children, ...left, ...right];
+}
 
-  return [el.layout, visit(el.rootNode)].join('::');
+/** Children that are laid out and drawn: none while the node is collapsed. */
+export function visibleChildrenOf(node: MindmapNode): MindmapNode[] {
+  return node.collapsed ? [] : childrenOf(node);
+}
+
+/**
+ * Root branches for the two-sided (`mindmap_lr`, 左右) layout, each side listed
+ * top to bottom. Explicit `rightChildren` / `leftChildren` win when either is
+ * set; otherwise (the app only ever fills `root.children`) the children are
+ * split clockwise like XMind: the first half (rounded up) runs down the right
+ * side and the rest continue up the left side. Reading order therefore goes
+ * around the root, and appending a child only ever moves the bottom-most branch
+ * across sides.
+ */
+export function getMindmapSides(root: MindmapNode): { right: MindmapNode[]; left: MindmapNode[] } {
+  const explicitRight = root.rightChildren ?? [];
+  const explicitLeft = root.leftChildren ?? [];
+  if (explicitRight.length > 0 || explicitLeft.length > 0) {
+    return {
+      right: explicitRight.length > 0 ? explicitRight : root.children,
+      left: explicitLeft,
+    };
+  }
+  const children = root.children;
+  const split = Math.ceil(children.length / 2);
+  return {
+    right: children.slice(0, split),
+    left: children.slice(split).reverse(),
+  };
 }
 
 /** Computes absolute rects for every node, honoring the element's layout direction. */
@@ -77,19 +95,52 @@ export function layoutMindmapNodes(el: MindmapElement, measure: MeasureNode): Ma
   const vGap = 20;
   const root = el.rootNode;
   const layout = new Map<string, Rect>();
+  // Per-layout memos: subtree extents would otherwise be recomputed at every level.
+  const sizeMemo = new Map<string, { w: number; h: number }>();
+  const heightMemo = new Map<string, number>();
+  const widthMemo = new Map<string, number>();
 
-  const getSubtreeHeight = (node: MindmapNode): number => {
-    const children = node.collapsed ? [] : node.children;
-    const size = measure(node);
-    const existing = layout.get(node.id);
-    layout.set(node.id, { x: existing?.x ?? 0, y: existing?.y ?? 0, w: size.w, h: size.h });
-    if (children.length === 0) return size.h;
-    let total = 0;
-    for (const child of children) {
-      total += getSubtreeHeight(child);
+  const sizeOf = (node: MindmapNode) => {
+    let size = sizeMemo.get(node.id);
+    if (!size) {
+      size = measure(node);
+      sizeMemo.set(node.id, size);
     }
-    total += (children.length - 1) * vGap;
-    return Math.max(size.h, total);
+    return size;
+  };
+
+  /** Height of a subtree whose children stack vertically (left / right layouts). */
+  const getSubtreeHeight = (node: MindmapNode): number => {
+    const memo = heightMemo.get(node.id);
+    if (memo !== undefined) return memo;
+    const children = node.collapsed ? [] : node.children;
+    const size = sizeOf(node);
+    let result = size.h;
+    if (children.length > 0) {
+      let total = 0;
+      for (const child of children) total += getSubtreeHeight(child);
+      total += (children.length - 1) * vGap;
+      result = Math.max(size.h, total);
+    }
+    heightMemo.set(node.id, result);
+    return result;
+  };
+
+  /** Width of a subtree whose children spread horizontally (tree_down). */
+  const getSubtreeWidth = (node: MindmapNode): number => {
+    const memo = widthMemo.get(node.id);
+    if (memo !== undefined) return memo;
+    const children = node.collapsed ? [] : node.children;
+    const size = sizeOf(node);
+    let result = size.w;
+    if (children.length > 0) {
+      let total = 0;
+      for (const child of children) total += getSubtreeWidth(child);
+      total += (children.length - 1) * hGap;
+      result = Math.max(size.w, total);
+    }
+    widthMemo.set(node.id, result);
+    return result;
   };
 
   const layoutTree = (
@@ -98,31 +149,30 @@ export function layoutMindmapNodes(el: MindmapElement, measure: MeasureNode): Ma
     y: number,
     direction: 'right' | 'left' | 'down',
   ) => {
-    const size = measure(node);
+    const size = sizeOf(node);
     layout.set(node.id, { x, y, w: size.w, h: size.h });
 
     const children = node.collapsed ? [] : node.children;
     if (children.length === 0) return;
 
     if (direction === 'down') {
-      const childWidths = children.map((c: MindmapNode) => {
-        getSubtreeHeight(c);
-        return layout.get(c.id)?.w ?? 60;
-      });
-      const totalW = childWidths.reduce((a: number, b: number) => a + b, 0) + (children.length - 1) * hGap;
-      let startX = x + size.w / 2 - totalW / 2;
+      // Each child owns a slot as wide as its whole subtree, so sibling
+      // subtrees never overlap; the child node is centred in its slot.
+      const slotWidths = children.map(getSubtreeWidth);
+      const totalW = slotWidths.reduce((a, b) => a + b, 0) + (children.length - 1) * hGap;
+      let slotX = x + size.w / 2 - totalW / 2;
+      const childY = y + size.h + vGap * 2;
       for (let i = 0; i < children.length; i++) {
-        layoutTree(children[i], startX, y + size.h + vGap * 2, direction);
-        startX += childWidths[i] + hGap;
+        const childW = sizeOf(children[i]).w;
+        layoutTree(children[i], slotX + slotWidths[i] / 2 - childW / 2, childY, direction);
+        slotX += slotWidths[i] + hGap;
       }
     } else {
       const subtreeHeight = getSubtreeHeight(node);
       let startY = y + size.h / 2 - subtreeHeight / 2;
       for (const child of children) {
         const ch = getSubtreeHeight(child);
-        const childRect = layout.get(child.id);
-        const childH = childRect?.h ?? 30;
-        const childW = childRect?.w ?? 60;
+        const { w: childW, h: childH } = sizeOf(child);
         const childY = startY + ch / 2 - childH / 2;
         const childX = direction === 'right'
           ? x + size.w + hGap
@@ -133,40 +183,33 @@ export function layoutMindmapNodes(el: MindmapElement, measure: MeasureNode): Ma
     }
   };
 
+  /** Stacks root branches on one side of the root, centred on it vertically. */
+  const layoutSide = (branches: MindmapNode[], rootSize: { w: number; h: number }, side: 'right' | 'left') => {
+    let total = 0;
+    for (const child of branches) total += getSubtreeHeight(child);
+    total += Math.max(0, branches.length - 1) * vGap;
+    let cy = el.y + rootSize.h / 2 - total / 2;
+    for (const child of branches) {
+      const ch = getSubtreeHeight(child);
+      const { w: childW, h: childH } = sizeOf(child);
+      const childX = side === 'right' ? el.x + rootSize.w + hGap : el.x - childW - hGap;
+      layoutTree(child, childX, cy + ch / 2 - childH / 2, side);
+      cy += ch + vGap;
+    }
+  };
+
   const elLayout = el.layout || 'mindmap_right';
   if (elLayout === 'tree_down') {
     layoutTree(root, el.x, el.y, 'down');
   } else if (elLayout === 'mindmap_left') {
     layoutTree(root, el.x, el.y, 'left');
   } else if (elLayout === 'mindmap_lr') {
-    const size = measure(root);
+    const size = sizeOf(root);
     layout.set(root.id, { x: el.x, y: el.y, w: size.w, h: size.h });
-
-    const rightChildren = root.rightChildren?.length ? root.rightChildren : root.children;
-    const leftChildren = root.leftChildren || [];
-
-    let totalRH = 0;
-    for (const child of rightChildren) totalRH += getSubtreeHeight(child);
-    totalRH += Math.max(0, rightChildren.length - 1) * vGap;
-    let ry = el.y + size.h / 2 - totalRH / 2;
-    for (const child of rightChildren) {
-      const ch = getSubtreeHeight(child);
-      const childH = layout.get(child.id)?.h ?? 30;
-      layoutTree(child, el.x + size.w + hGap, ry + ch / 2 - childH / 2, 'right');
-      ry += ch + vGap;
-    }
-
-    let totalLH = 0;
-    for (const child of leftChildren) totalLH += getSubtreeHeight(child);
-    totalLH += Math.max(0, leftChildren.length - 1) * vGap;
-    let ly = el.y + size.h / 2 - totalLH / 2;
-    for (const child of leftChildren) {
-      const ch = getSubtreeHeight(child);
-      const childRect = layout.get(child.id);
-      const childH = childRect?.h ?? 30;
-      const childW = childRect?.w ?? 60;
-      layoutTree(child, el.x - childW - hGap, ly + ch / 2 - childH / 2, 'left');
-      ly += ch + vGap;
+    if (!root.collapsed) {
+      const { right, left } = getMindmapSides(root);
+      layoutSide(right, size, 'right');
+      layoutSide(left, size, 'left');
     }
   } else {
     layoutTree(root, el.x, el.y, 'right');
