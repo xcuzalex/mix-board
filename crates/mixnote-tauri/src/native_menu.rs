@@ -22,8 +22,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         Some("关于 MixNote"),
         Some(AboutMetadata {
             name: Some("MixNote".into()),
-            version: Some("0.1.0".into()),
-            website: Some("https://github.com".into()),
+            version: Some(app.package_info().version.to_string()),
             ..Default::default()
         }),
     )?;
@@ -164,39 +163,7 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         return;
     }
 
-    let should_emit = matches!(
-        id,
-        "file.new"
-            | "file.open"
-            | "file.open_vault"
-            | "file.library"
-            | "file.save"
-            | "file.export_png"
-            | "file.export_md"
-            | "edit.undo"
-            | "edit.redo"
-            | "edit.duplicate"
-            | "edit.delete"
-            | "insert.text"
-            | "insert.note"
-            | "insert.arrow"
-            | "insert.frame"
-            | "insert.section"
-            | "insert.mindmap"
-            | "insert.image"
-            | "arrange.forward"
-            | "arrange.backward"
-            | "arrange.front"
-            | "arrange.back"
-            | "arrange.group"
-            | "arrange.ungroup"
-            | "view.toggle_grid"
-            | "view.toggle_dots"
-            | "view.reset"
-            | "help.about"
-    );
-
-    if should_emit {
-        let _ = app.emit(MENU_EVENT_NAME, id.to_string());
-    }
+    // Every other custom item is handled by the webview, which ignores ids it
+    // doesn't know. (Predefined items like Copy are handled natively.)
+    let _ = app.emit(MENU_EVENT_NAME, id.to_string());
 }
