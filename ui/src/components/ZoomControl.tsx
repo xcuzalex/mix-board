@@ -39,6 +39,8 @@ export function ZoomControl() {
   const setViewport = useUIStore((s) => s.setViewport);
   const theme = useUIStore((s) => s.theme);
   const cycleTheme = useUIStore((s) => s.cycleTheme);
+  const showDots = useUIStore((s) => s.showDots);
+  const toggleDots = useUIStore((s) => s.toggleDots);
 
   const zoomIn = () => setZoom(Math.min(5, zoom * 1.2));
   const zoomOut = () => setZoom(Math.max(0.1, zoom / 1.2));
@@ -57,6 +59,18 @@ export function ZoomControl() {
       </button>
       <button className={`w-7 h-7 text-sm ${btn}`} onClick={zoomIn} title="放大">+</button>
       <span className="mx-0.5 h-5 w-px bg-black/[0.08] dark:bg-white/10" />
+      <button
+        className={`w-7 h-7 ${btn} ${showDots ? '' : 'opacity-50'}`}
+        onClick={toggleDots}
+        title={showDots ? '隐藏点阵背景' : '显示点阵背景'}
+        aria-label="切换点阵背景"
+        aria-pressed={showDots}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          {[5, 12, 19].flatMap((y) => [5, 12, 19].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.6" />))}
+          {!showDots && <path d="M4 20L20 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
+        </svg>
+      </button>
       <button className={`w-7 h-7 ${btn}`} onClick={cycleTheme} title={THEME_LABEL[theme]} aria-label="切换主题">
         <ThemeIcon theme={theme} />
       </button>
