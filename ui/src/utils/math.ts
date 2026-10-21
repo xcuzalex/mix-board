@@ -65,7 +65,7 @@ export function snapToElements(
   dragX: number, dragY: number,
   dragW: number, dragH: number,
   elements: Array<{ x: number; y: number; width: number; height: number; id: string }>,
-  excludeIds: string[],
+  excludeIds: ReadonlySet<string>,
 ): SnapResult {
   let snappedX = dragX;
   let snappedY = dragY;
@@ -81,7 +81,7 @@ export function snapToElements(
   let bestDy = SNAP_THRESHOLD;
 
   for (const el of elements) {
-    if (excludeIds.includes(el.id)) continue;
+    if (excludeIds.has(el.id)) continue;
 
     const elCx = el.x + el.width / 2;
     const elCy = el.y + el.height / 2;

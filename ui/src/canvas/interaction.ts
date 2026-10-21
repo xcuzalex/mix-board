@@ -12,11 +12,13 @@ import { snapToGrid, snapToElements, type SnapGuide } from '../utils/math';
 import { hitTest, getResizeHandle, type HandlePosition } from './hit-test';
 import { Viewport } from './viewport';
 import {
+  createSceneIndex,
   findBindableElementWithStickyPreference,
   getConnectionPointFromBinding,
   getLinearAbsolutePoints,
   getLinearBounds,
   normalizeLinearPoints,
+  type SceneIndex,
 } from './linear';
 import { getDefaultShapeVariant, isShapeTool } from './shape-utils';
 
@@ -349,12 +351,7 @@ export function handlePointerDown(
       const handle = getResizeHandle(el, elements, canvas.x, canvas.y, 8 / viewport.zoom);
       if (handle) {
         state.resizeHandle = handle;
-        state.originalElements = new Map(
-          selectedIds.map(sid => {
-            const sel = elements.find(e => e.id === sid)!;
-            return [sid, { x: sel.x, y: sel.y, width: sel.width, height: sel.height }];
-          }),
-        );
+        state.originalElements = originalBoundsOf(selectedIds, elements);
         state.hasDragged = false;
         state.dragThreshold = 4;
         return { action: 'resize', handle };
@@ -371,12 +368,7 @@ export function handlePointerDown(
         canvas.x >= bounds.x - pad && canvas.x <= bounds.x + bounds.width + pad &&
         canvas.y >= bounds.y - pad && canvas.y <= bounds.y + bounds.height + pad
       ) {
-        state.originalElements = new Map(
-          selectedIds.map(sid => {
-            const sel = elements.find(e => e.id === sid)!;
-            return [sid, { x: sel.x, y: sel.y, width: sel.width, height: sel.height }];
-          }),
-        );
+        state.originalElements = originalBoundsOf(selectedIds, elements);
         state.hasDragged = false;
         state.dragThreshold = 4;
         return { action: 'drag', element: el, selectedIds };
@@ -413,12 +405,7 @@ export function handlePointerDown(
         : newSelected;
 
       // Store original positions for drag
-      state.originalElements = new Map(
-        dragIds.map(id => {
-          const el = elements.find(e => e.id === id)!;
-          return [id, { x: el.x, y: el.y, width: el.width, height: el.height }];
-        }),
-      );
+      state.originalElements = originalBoundsOf(dragIds, elements);
       state.hasDragged = false;
       state.dragThreshold = 4;
 
@@ -561,7 +548,7 @@ export function handlePointerMove(
         newY = snapToGrid(newY, gridSize);
       } else {
         // Snap to other elements
-        const snapResult = snapToElements(newX, newY, bboxW, bboxH, _elements, selectedIds);
+        const snapResult = snapToElements(newX, newY, bboxW, bboxH, _elements, new Set(state.originalElements.keys()));
         newX = snapResult.x;
         newY = snapResult.y;
         snapGuides = snapResult.guides;
@@ -891,16 +878,31 @@ export function getElementsInSelectionBox(
   box: { x: number; y: number; width: number; height: number },
 ): string[] {
   const ids: string[] = [];
+  let scene: SceneIndex | null = null;
   for (const el of elements) {
-    // Check if element overlaps with selection box
+    // Bound connectors' stored boxes go stale when their shapes move.
+    const bounds = el.type === 'line' || el.type === 'arrow'
+      ? getLinearBounds(el as LinearElement, (scene ??= createSceneIndex(elements)))
+      : el;
     if (
-      el.x < box.x + box.width &&
-      el.x + el.width > box.x &&
-      el.y < box.y + box.height &&
-      el.y + el.height > box.y
+      bounds.x < box.x + box.width &&
+      bounds.x + bounds.width > box.x &&
+      bounds.y < box.y + box.height &&
+      bounds.y + bounds.height > box.y
     ) {
       ids.push(el.id);
     }
   }
   return ids;
+}
+
+/** Drag/resize start boxes for the given ids (ids no longer on the board are skipped). */
+function originalBoundsOf(ids: string[], elements: Element[]) {
+  const byId = new Map(elements.map((el) => [el.id, el]));
+  const bounds = new Map<string, { x: number; y: number; width: number; height: number }>();
+  for (const id of ids) {
+    const el = byId.get(id);
+    if (el) bounds.set(id, { x: el.x, y: el.y, width: el.width, height: el.height });
+  }
+  return bounds;
 }

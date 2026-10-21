@@ -16,11 +16,13 @@ import {
 import { ContextMenu, type ContextMenuState } from '../components/ContextMenu';
 import { loadImageToCache } from './renderer';
 import { generateId } from '../utils/id';
+import { cloneElementsWithNewIds } from '../utils/clone-elements';
 import {
   findMindmapNode,
   visitMindmapNodes,
   updateMindmapNodeText,
   moveMindmapNode,
+  extractMindmapNode,
 } from './mindmap-ops';
 import { useCanvasShortcuts } from './useCanvasShortcuts';
 import { buildLinkIndex, getNoteTitle } from '../utils/links';
@@ -43,12 +45,14 @@ import type { Element, ImageElement, LinearElement, MindmapElement, MindmapNode,
 import { registerPendingCanvasInteractionFlush } from '../utils/canvas-interaction-flush';
 import type { SnapGuide } from '../utils/math';
 import { exportCurrentBoardAsImage, saveCurrentDocument } from '../utils/document-io';
+import { useVaultStore } from '../store/vault';
 
 const viewport = new Viewport();
 const interactionState = createInteractionState();
 
 // Module-level clipboard
 let clipboard: Element[] = [];
+const EMPTY_SCENE = createSceneIndex([]);
 
 type StickyEndpointState = {
   binding: LinearElement['startBinding'];
@@ -163,6 +167,12 @@ export function Canvas() {
   const lastWheelTimeRef = useRef(0);
   const pendingElementUpdatesRef = useRef<Map<string, Partial<Element>> | null>(null);
   const hiddenElementIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Bound connectors in the current drag selection, with their resolved
+   * geometry. They are unbound only if the drag actually moves (see
+   * `withConnectorUnbinding`), so clicking a connected arrow keeps it attached.
+   */
+  const dragUnbindRef = useRef<Map<string, Pick<LinearElement, 'points' | 'width' | 'height'>> | null>(null);
   const lassoSelectedIdsRef = useRef<string[]>([]);
   const drawingBindingStateRef = useRef<{ start: StickyEndpointState; end: StickyEndpointState }>({
     start: { binding: null, anchor: null },
@@ -231,13 +241,28 @@ export function Canvas() {
   cursorRef.current = cursorStyle;
   const freedrawColor = useUIStore((s) => s.freedrawColor);
   const highlighterColor = useUIStore((s) => s.highlighterColor);
-  const sceneIndexRef = useRef<SceneIndex>(createSceneIndex(elements));
+  // Starts empty (not built on every render); rebuilt below whenever elements change.
+  const sceneIndexRef = useRef<SceneIndex>(EMPTY_SCENE);
   const spatialIndexRef = useRef<SpatialIndex | null>(null);
 
   if (sceneIndexRef.current.elements !== elements) {
     sceneIndexRef.current = createSceneIndex(elements);
     spatialIndexRef.current = new SpatialIndex(elements, sceneIndexRef.current);
   }
+
+  // Undo/redo or deletes elsewhere can remove selected elements: drop them
+  // from the selection so later gestures never look up a missing element.
+  useEffect(() => {
+    const ui = useUIStore.getState();
+    const byId = sceneIndexRef.current.byId;
+    const kept = ui.selectedIds.filter((id) => byId.has(id));
+    if (kept.length !== ui.selectedIds.length) ui.setSelectedIds(kept);
+    const node = ui.selectedMindmapNode;
+    if (node) {
+      const el = byId.get(node.elementId);
+      if (!el || el.type !== 'mindmap' || !findMindmapNode(el.rootNode, node.nodeId)) ui.setSelectedMindmapNode(null);
+    }
+  }, [elements]);
 
   const syncHoveredAnchor = useCallback((nextAnchor: ConnectionAnchorDescriptor | null) => {
     if (areAnchorsEqual(hoveredAnchorRef.current, nextAnchor)) return false;
@@ -381,6 +406,19 @@ export function Canvas() {
     renderOverlayRef.current = renderOverlay;
   }, [renderOverlay]);
 
+  /** Adds the unbinding of dragged connectors to a drag's pending updates. */
+  const withConnectorUnbinding = useCallback((updates: Map<string, Partial<Element>>) => {
+    const unbind = dragUnbindRef.current;
+    if (!unbind || actionRef.current !== 'drag') return updates;
+    const merged = new Map(updates);
+    for (const [id, geometry] of unbind) {
+      const moved = updates.get(id);
+      if (!moved) continue;
+      merged.set(id, { ...geometry, startBinding: null, endBinding: null, ...moved } as Partial<Element>);
+    }
+    return merged;
+  }, []);
+
   const commitPendingElementUpdates = useCallback(() => {
     const pendingUpdates = pendingElementUpdatesRef.current;
     if (!pendingUpdates) return false;
@@ -391,9 +429,8 @@ export function Canvas() {
 
     setPendingElementUpdates(null);
     const now = Date.now();
-    const transaction = useDocumentStore.getState().applyTransaction ?? applyTransaction;
 
-    transaction((draft) => {
+    applyTransaction((draft) => {
       for (const element of draft.elements) {
         const updates = pendingUpdates.get(element.id);
         if (!updates) continue;
@@ -405,7 +442,6 @@ export function Canvas() {
     return true;
   }, [applyTransaction, invalidateScene, setPendingElementUpdates]);
 
-  useEffect(() => registerPendingCanvasInteractionFlush(commitPendingElementUpdates), [commitPendingElementUpdates]);
 
   // Setup canvas
   useEffect(() => {
@@ -491,13 +527,10 @@ export function Canvas() {
             selectionBoxRef.current = result.selectionBox;
             const box = result.selectionBox;
             const lassoIds = getElementsInSelectionBox(useDocumentStore.getState().elements, box);
-            const nextLasso = lassoIds;
-            if (JSON.stringify(nextLasso) !== JSON.stringify(lassoSelectedIdsRef.current)) {
-              lassoSelectedIdsRef.current = nextLasso;
-            }
+            lassoSelectedIdsRef.current = lassoIds;
           }
           if (result.updatedElements && result.updatedElements.size > 0 && result.hasDragged !== false) {
-            pendingElementUpdatesRef.current = result.updatedElements;
+            pendingElementUpdatesRef.current = withConnectorUnbinding(result.updatedElements);
           }
           if (result.snapGuides) {
             snapGuidesRef.current = result.snapGuides;
@@ -565,27 +598,47 @@ export function Canvas() {
 
   // --- Text editing helpers ---
 
-  const startTextEditing = useCallback((el: Element) => {
+  /** The text an edit started from, and whether its element was just created. */
+  const editSessionRef = useRef<{ initial: string; isNew: boolean } | null>(null);
+
+  const startTextEditing = useCallback((el: Element, options?: { isNew?: boolean }) => {
     const editableTypes = ['text', 'sticky_note', 'section', 'frame', 'rectangle', 'ellipse', 'diamond', 'triangle'];
     if (!editableTypes.includes(el.type)) return;
     setEditingMindmapNode(null);
     setEditingElement(el);
     const isContainer = el.type === 'section' || el.type === 'frame';
     const content = isContainer ? (el as any).title || '' : (el as any).text || '';
-    setEditText(getEditableDraft(content));
+    const initial = getEditableDraft(content);
+    editSessionRef.current = { initial, isNew: options?.isNew ?? false };
+    setEditText(initial);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
 
   const startMindmapNodeEditing = useCallback((elementId: string, nodeId: string, text: string) => {
     setEditingElement(null);
     setEditingMindmapNode({ elementId, nodeId });
-    setEditText(getEditableDraft(text));
+    const initial = getEditableDraft(text);
+    editSessionRef.current = { initial, isNew: false };
+    setEditText(initial);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
 
   const finishEditing = useCallback(() => {
-    if (editingElement) {
-      pushHistory();
+    const session = editSessionRef.current;
+    editSessionRef.current = null;
+    const unchanged = session !== null && editText === session.initial;
+    // A just-created element's creation is already its undo step.
+    const checkpoint = () => {
+      if (!session?.isNew) pushHistory();
+    };
+
+    if (editingElement && editingElement.type === 'text' && editText.trim() === '') {
+      // An empty text box is invisible but would still catch clicks: drop it.
+      if (!session?.isNew) pushHistory();
+      removeElements([editingElement.id]);
+      setSelectedIds(useUIStore.getState().selectedIds.filter((id) => id !== editingElement.id));
+    } else if (editingElement && !unchanged) {
+      checkpoint();
       const isContainer = editingElement.type === 'section' || editingElement.type === 'frame';
       if (editingElement.type === 'sticky_note') {
         // Cards fit their height to the rendered Markdown content.
@@ -616,7 +669,7 @@ export function Canvas() {
       } else {
         updateElement(editingElement.id, (isContainer ? { title: editText } : { text: editText, fontSize: (editingElement as any).fontSize || 16 }) as any);
       }
-    } else if (editingMindmapNode) {
+    } else if (editingMindmapNode && !unchanged) {
       const element = sceneIndexRef.current.byId.get(editingMindmapNode.elementId);
       if (element?.type === 'mindmap') {
         pushHistory();
@@ -629,7 +682,19 @@ export function Canvas() {
     setEditingElement(null);
     setEditingMindmapNode(null);
     setEditText('');
-  }, [editingElement, editingMindmapNode, editText, elements, pushHistory, updateElement]);
+  }, [editingElement, editingMindmapNode, editText, pushHistory, updateElement, removeElements, setSelectedIds]);
+
+  // Quit, window close, opening another board etc. commit whatever is in
+  // flight on the canvas first: drag/resize previews and an open text edit.
+  const finishEditingRef = useRef(finishEditing);
+  useLayoutEffect(() => {
+    finishEditingRef.current = finishEditing;
+  }, [finishEditing]);
+  useEffect(() => registerPendingCanvasInteractionFlush(() => {
+    const committed = commitPendingElementUpdates();
+    finishEditingRef.current();
+    return committed;
+  }), [commitPendingElementUpdates]);
 
   const findMindmapHitAtPoint = useCallback((x: number, y: number) => {
     const renderer = sceneRendererRef.current;
@@ -712,12 +777,10 @@ export function Canvas() {
     if (clipboard.length === 0) return;
     commitPendingElementUpdates();
     pushHistory();
-    const newIds: string[] = [];
-    for (const el of clipboard) {
-      const newEl = { ...JSON.parse(JSON.stringify(el)), id: generateId(), x: el.x + 20, y: el.y + 20 };
-      addElement(newEl);
-      newIds.push(newEl.id);
-    }
+    // Fresh ids and group ids; arrows stay bound only to shapes pasted with them.
+    const copies = cloneElementsWithNewIds(clipboard, 20, (el) => getLinearAbsolutePoints(el, sceneIndexRef.current));
+    for (const copy of copies) addElement(copy);
+    const newIds = copies.map((copy) => copy.id);
     setSelectedIds(newIds);
     setSelectedMindmapNode(null);
     // Shift clipboard offset for subsequent pastes
@@ -737,10 +800,19 @@ export function Canvas() {
     if (selectedIds.length === 0) return;
     commitPendingElementUpdates();
     pushHistory();
+    // A selected mindmap topic (not the root) deletes just that topic and its subtree.
+    const node = useUIStore.getState().selectedMindmapNode;
+    const mindmap = node && selectedIds.length === 1 ? sceneIndexRef.current.byId.get(node.elementId) : null;
+    if (node && mindmap?.type === 'mindmap' && mindmap.id === selectedIds[0] && node.nodeId !== mindmap.rootNode.id) {
+      const { root } = extractMindmapNode(mindmap.rootNode, node.nodeId);
+      updateElement(mindmap.id, { rootNode: root } as Partial<Element>);
+      setSelectedMindmapNode(null);
+      return;
+    }
     removeElements(selectedIds);
     setSelectedIds([]);
     setSelectedMindmapNode(null);
-  }, [selectedIds, commitPendingElementUpdates, pushHistory, removeElements, setSelectedIds]);
+  }, [selectedIds, commitPendingElementUpdates, pushHistory, removeElements, setSelectedIds, updateElement]);
 
   // --- Export PNG ---
   const handleExportPNG = useCallback(() => {
@@ -786,7 +858,7 @@ export function Canvas() {
               ? { elementId: target.id, nodeId: (target as MindmapElement).rootNode.id }
               : null,
           );
-          setViewport(rect.width / 2 - (target.x + target.width / 2) * zoom, rect.height / 2 - (target.y + target.height / 2) * zoom);
+          setViewport(rect.width / 2 - (target.x + target.width / 2) * viewport.zoom, rect.height / 2 - (target.y + target.height / 2) * viewport.zoom);
           return;
         }
       }
@@ -811,7 +883,7 @@ export function Canvas() {
         setSelectedIds([el.id]);
         setSelectedMindmapNode(null);
         setActiveTool('select');
-        startTextEditing(el);
+        startTextEditing(el, { isNew: true });
       }
       return;
     }
@@ -826,7 +898,7 @@ export function Canvas() {
         setSelectedIds([el.id]);
         setSelectedMindmapNode(null);
         setActiveTool('select');
-        startTextEditing(el);
+        startTextEditing(el, { isNew: true });
       }
       return;
     }
@@ -844,11 +916,19 @@ export function Canvas() {
         reader.onload = async () => {
           const dataURL = reader.result as string;
           const fileId = generateId();
-          await loadImageToCache(fileId, dataURL);
-          // Get image dimensions
+          // Get image dimensions (and make sure it decodes) before caching it
           const img = new Image();
           img.src = dataURL;
-          await new Promise<void>((resolve) => { img.onload = () => resolve(); });
+          try {
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve();
+              img.onerror = () => reject(new Error('decode failed'));
+            });
+          } catch {
+            useVaultStore.getState().setNotice('无法读取这张图片');
+            return;
+          }
+          await loadImageToCache(fileId, dataURL);
           const maxDim = 400;
           let w = img.width;
           let h = img.height;
@@ -905,7 +985,7 @@ export function Canvas() {
       for (const id of selectedIds) {
         const el = sceneIndexRef.current.byId.get(id);
         if (!el) continue;
-        const handle = getResizeHandle(el, sceneIndexRef.current, canvasPos.x, canvasPos.y, 8 / zoom);
+        const handle = getResizeHandle(el, sceneIndexRef.current, canvasPos.x, canvasPos.y, 8 / viewport.zoom);
         if (handle) {
           clickedHandle = true;
           break;
@@ -920,7 +1000,7 @@ export function Canvas() {
           if (sourceEl) {
             const startAnchor = hoveredAnchorRef.current?.elementId === sourceEl.id
               ? hoveredAnchorRef.current
-              : findNearestConnectionAnchor(sourceEl, canvasPos.x, canvasPos.y, 12 / zoom);
+              : findNearestConnectionAnchor(sourceEl, canvasPos.x, canvasPos.y, 12 / viewport.zoom);
             if (!startAnchor) {
               return;
             }
@@ -954,7 +1034,20 @@ export function Canvas() {
     }
 
     if (activeTool === 'select') {
-      const mindmapHit = findMindmapHitAtPoint(canvasPos.x, canvasPos.y);
+      let mindmapHit = findMindmapHitAtPoint(canvasPos.x, canvasPos.y);
+      if (mindmapHit) {
+        // Something stacked above the mindmap, or a selected element's resize
+        // handle, gets the click instead of the topic underneath.
+        const scene = sceneIndexRef.current;
+        const onHandle = selectedIds.some((id) => {
+          const el = scene.byId.get(id);
+          return !!el && el.type !== 'mindmap' && !!getResizeHandle(el, scene, canvasPos.x, canvasPos.y, 8 / viewport.zoom);
+        });
+        const topHit = hitTest(scene, canvasPos.x, canvasPos.y, spatialIndexRef.current ?? undefined);
+        const covered = !!topHit && topHit.id !== mindmapHit.element.id
+          && scene.elements.indexOf(topHit) > scene.elements.indexOf(mindmapHit.element);
+        if (onHandle || covered) mindmapHit = null;
+      }
       if (mindmapHit) {
         interactionState.startX = canvasPos.x;
         interactionState.startY = canvasPos.y;
@@ -972,6 +1065,10 @@ export function Canvas() {
               height: mindmapHit.element.height,
             },
           ]]);
+          // This path skips handlePointerDown, so reset its drag threshold here.
+          interactionState.hasDragged = false;
+          interactionState.dragThreshold = 4;
+          dragUnbindRef.current = null;
           actionRef.current = 'drag';
           pushHistory();
         } else {
@@ -1024,23 +1121,24 @@ export function Canvas() {
     if (result.action === 'drag') {
       resetLinearBindingPreview();
       pushHistory();
-      // For connected lines: resolve absolute points and clear bindings so they can be freely dragged
+      // Connected lines move freely once dragged: drag them from their resolved
+      // geometry; the bindings are dropped only if the drag really moves.
       const dragIds = result.selectedIds ?? selectedIds;
+      const unbind = new Map<string, Pick<LinearElement, 'points' | 'width' | 'height'>>();
       for (const id of dragIds) {
         const el = sceneIndexRef.current.byId.get(id);
         if (!el || (el.type !== 'line' && el.type !== 'arrow')) continue;
         const linearEl = el as LinearElement;
         if (linearEl.startBinding || linearEl.endBinding) {
-          const absPoints = getLinearAbsolutePoints(linearEl, sceneIndexRef.current);
-          const normalized = normalizeLinearPoints(absPoints);
-          updateElement(id, { ...normalized, startBinding: null, endBinding: null } as any);
-          // Update originalElements in interactionState with resolved bounds
+          const normalized = normalizeLinearPoints(getLinearAbsolutePoints(linearEl, sceneIndexRef.current));
+          unbind.set(id, { points: normalized.points, width: normalized.width, height: normalized.height });
           interactionState.originalElements.set(id, {
             x: normalized.x, y: normalized.y,
             width: normalized.width, height: normalized.height,
           });
         }
       }
+      dragUnbindRef.current = unbind.size > 0 ? unbind : null;
     }
 
     if (result.action === 'resize') {
@@ -1463,16 +1561,13 @@ export function Canvas() {
       if (actionRef.current === 'select') {
         const box = result.selectionBox;
         const lassoIds = getElementsInSelectionBox(useDocumentStore.getState().elements, box);
-        const nextLasso = lassoIds;
-        if (JSON.stringify(nextLasso) !== JSON.stringify(lassoSelectedIdsRef.current)) {
-          lassoSelectedIdsRef.current = nextLasso;
-        }
+        lassoSelectedIdsRef.current = lassoIds;
       }
       invalidateOverlay();
     }
 
     if (result.updatedElements && result.hasDragged !== false) {
-      setPendingElementUpdates(result.updatedElements.size > 0 ? result.updatedElements : null);
+      setPendingElementUpdates(result.updatedElements.size > 0 ? withConnectorUnbinding(result.updatedElements) : null);
 
       if (actionRef.current === 'resize' && result.updatedElements.size > 0) {
         const upd = Array.from(result.updatedElements.values())[0];
@@ -1523,6 +1618,7 @@ export function Canvas() {
         : { x: interactionState.currentX, y: interactionState.currentY };
 
       commitPendingElementUpdates();
+      dragUnbindRef.current = null;
 
       // Drag threshold: if never crossed, treat as a pure click
       if (actionRef.current === 'drag' && !interactionState.hasDragged) {

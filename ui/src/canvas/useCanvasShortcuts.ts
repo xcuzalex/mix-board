@@ -97,7 +97,11 @@ export function useCanvasShortcuts(params: CanvasShortcutsParams) {
     const onKeyDown = (e: KeyboardEvent) => {
       // Don't handle shortcuts when focus is in an input / textarea / contenteditable
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) {
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+      // Space/Enter on a focused button activate the button, not the canvas.
+      if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) {
         return;
       }
 
@@ -210,7 +214,10 @@ export function useCanvasShortcuts(params: CanvasShortcutsParams) {
 
       // Ctrl/Cmd shortcuts
       if (e.metaKey || e.ctrlKey) {
-        switch (e.key) {
+        // With Shift held e.key is the shifted character ('}' for ']', 'Z' for
+        // 'z' in some engines), so match the physical bracket keys and lowercase letters.
+        const key = e.code === 'BracketRight' ? ']' : e.code === 'BracketLeft' ? '[' : e.key.toLowerCase();
+        switch (key) {
           case 'z':
             commitPendingElementUpdates();
             if (e.shiftKey) {

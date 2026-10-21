@@ -15,6 +15,9 @@ function elementCouldContainPoint(el: Element, x: number, y: number): boolean {
   switch (el.type) {
     case 'line':
     case 'arrow':
+      // A bound connector's stored box goes stale when its shapes move; the
+      // spatial index already narrows these by their drawn path.
+      return true;
     case 'freedraw':
     case 'highlighter':
       // These elements need generous bounding boxes
