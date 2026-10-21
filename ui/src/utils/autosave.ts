@@ -1,9 +1,12 @@
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { create } from 'zustand';
 import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element } from '../types/element';
+import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { serializeDocument } from './document-io';
 
 // Autosave only reads store snapshots: it never pushes history or touches
@@ -15,6 +18,8 @@ const DB_VERSION = 1;
 const DRAFT_STORE = 'drafts';
 // One window, one document: a single draft slot is enough.
 const DRAFT_KEY = 'current';
+// Sent by the Rust side before quitting; answered with `quit_flush_done`.
+const QUIT_FLUSH_EVENT = 'mixboard-flush-before-quit';
 
 export type AutosaveStatus =
   | 'idle' // nothing edited since open/new
@@ -231,6 +236,18 @@ export function flushAutosave() {
 }
 
 /**
+ * Writes the document to its file now (desktop Cmd+S on a named document).
+ * Queued behind any in-flight autosave so an older snapshot can't land last.
+ * Resolves to false if the write failed (the error shows in the status).
+ */
+export function saveToDocumentFile() {
+  cancelTimer();
+  pendingChange = false;
+  queue = queue.then(() => persist(takeSnapshot()));
+  return queue.then(() => useAutosaveStore.getState().status !== 'error');
+}
+
+/**
  * beforeunload can't await: start the IndexedDB write synchronously so it has
  * the best chance of committing. Returns true if unsaved work was in flight.
  */
@@ -304,19 +321,31 @@ export function startAutosave() {
 
   if (isDesktop()) {
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const unlisteners: Array<() => void> = [];
+    const keep = (fn: () => void) => {
+      if (disposed) fn();
+      else unlisteners.push(fn);
+    };
     // Tauri awaits this handler before destroying the window.
     void getCurrentWindow()
       .onCloseRequested(async () => {
         await flushAutosave();
       })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      });
+      .then(keep);
+    // Cmd+Q never closes the window, so the Rust side asks for a flush and
+    // holds the exit until we answer (or its timeout passes).
+    void listen(QUIT_FLUSH_EVENT, async () => {
+      try {
+        // Commit an in-progress text edit so it is part of the save.
+        flushPendingCanvasInteractionState();
+        await flushAutosave();
+      } finally {
+        await invoke('quit_flush_done');
+      }
+    }).then(keep);
     cleanups.push(() => {
       disposed = true;
-      unlisten?.();
+      for (const fn of unlisteners) fn();
     });
   } else {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {

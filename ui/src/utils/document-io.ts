@@ -5,6 +5,7 @@ import { getPlatform } from '../platform';
 import { useDocumentStore } from '../store/document';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element, LinearElement, MindmapElement } from '../types/element';
+import { saveToDocumentFile } from './autosave';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
 import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
@@ -120,6 +121,12 @@ export async function saveCurrentDocument() {
   flushPendingCanvasInteractionState();
   const { elements, appState, files, filePath } = useDocumentStore.getState();
   const platform = await getPlatform();
+
+  // Desktop documents that already have a file are overwritten in place, no dialog.
+  if (platform.isDesktop() && filePath) {
+    return (await saveToDocumentFile()) ? filePath : null;
+  }
+
   const path = await platform.saveFile(
     serializeDocument(elements, appState, files),
     getSuggestedDocumentPath(filePath),
