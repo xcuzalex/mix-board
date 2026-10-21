@@ -14,7 +14,7 @@ import {
   finalizeFreehandElement,
 } from './interaction';
 import { ContextMenu, type ContextMenuState } from '../components/ContextMenu';
-import { loadImageToCache } from './renderer';
+import { loadImageToCache, subscribeRendererAssets } from './renderer';
 import { generateId } from '../utils/id';
 import { cloneElementsWithNewIds } from '../utils/clone-elements';
 import {
@@ -350,6 +350,9 @@ export function Canvas() {
   ]);
 
   // Sync canvas-surface colors to the theme and repaint when it changes (P0.D).
+  // Images decode and web fonts load after the first paint: repaint when they land.
+  useEffect(() => subscribeRendererAssets(() => invalidateScene()), [invalidateScene]);
+
   useEffect(() => {
     setCanvasTheme(effectiveTheme);
     invalidateScene();

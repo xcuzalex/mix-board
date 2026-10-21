@@ -4,6 +4,8 @@ import { createSceneIndex, getLinearAbsolutePoints, getLinearBounds, type SceneI
 import { getLinearPathPoints } from './render/linear';
 
 const HIT_THRESHOLD = 4;
+/** Connectors are thin; give them a wider grab zone than shape edges. */
+const LINE_HIT_THRESHOLD = 8;
 const SPATIAL_GRID_SIZE = 500;
 
 /**
@@ -206,7 +208,7 @@ function hitTestLinear(el: Element, scene: SceneIndex, px: number, py: number): 
   for (let i = 0; i < points.length - 1; i++) {
     const [x1, y1] = points[i];
     const [x2, y2] = points[i + 1];
-    if (pointToSegmentDistance(px, py, x1, y1, x2, y2) < HIT_THRESHOLD) return true;
+    if (pointToSegmentDistance(px, py, x1, y1, x2, y2) < LINE_HIT_THRESHOLD + el.strokeWidth / 2) return true;
   }
   return false;
 }
