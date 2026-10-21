@@ -33,7 +33,7 @@ async function settleCurrentDocument() {
   await settleDocument();
   if (useAutosaveStore.getState().status === 'error') {
     // The board is about to be replaced; its edits survive as a local draft.
-    useVaultStore.getState().setNotice('上一个画板没能写入文件，修改已保存为本机草稿，下次启动时可恢复');
+    useVaultStore.getState().setNotice('上一个笔记没能写入文件，修改已保存为本机草稿，下次启动时可恢复');
   }
 }
 
@@ -135,12 +135,12 @@ export async function openBoard(path: string) {
   try {
     content = await (await getPlatform()).readDocumentFile(path);
   } catch (err) {
-    useVaultStore.getState().setNotice(`无法打开画板：${errorMessage(err)}`);
+    useVaultStore.getState().setNotice(`无法打开笔记：${errorMessage(err)}`);
     return;
   }
   const store = useDocumentStore.getState();
   if (!store.loadDocument(content)) {
-    useVaultStore.getState().setNotice('无法打开画板：文件已损坏或不是 MixNote 画板');
+    useVaultStore.getState().setNotice('无法打开笔记：文件已损坏或不是 MixNote 笔记');
     return;
   }
   store.setFilePath(path);
@@ -170,10 +170,11 @@ export async function setFavorite(path: string, favorite: boolean) {
 
 /**
  * New board: with a vault, a `未命名 N.mixnote` file is created right away in
- * the selected folder and its name opens for editing. Without one, a blank
- * untitled board (saved as a local draft).
+ * `folder` (default: the folder open in the library; null: the vault root) and
+ * its name opens for editing. Without one, a blank untitled board (saved as a
+ * local draft).
  */
-export async function createBoard() {
+export async function createBoard(folder?: string | null) {
   await settleCurrentDocument();
   const store = useDocumentStore.getState();
   store.newDocument();
@@ -182,9 +183,8 @@ export async function createBoard() {
   if (!useVaultStore.getState().vault) return;
 
   const { elements, appState, files } = useDocumentStore.getState();
-  const path = await run((vault) =>
-    vault.createBoard(useVaultStore.getState().folder, serializeDocument(elements, appState, files)),
-  );
+  const target = folder === undefined ? useVaultStore.getState().folder : folder;
+  const path = await run((vault) => vault.createBoard(target, serializeDocument(elements, appState, files)));
   if (!path) return;
   useDocumentStore.getState().setFilePath(path);
   void run((vault) => vault.setLastBoard(path));
@@ -193,8 +193,10 @@ export async function createBoard() {
   useVaultStore.getState().setRenamingPath(path);
 }
 
-export async function createFolder() {
-  const path = await run((vault) => vault.createFolder(useVaultStore.getState().folder));
+/** New folder in `parent` (default: the folder open in the library; null: the vault root). */
+export async function createFolder(parent?: string | null) {
+  const target = parent === undefined ? useVaultStore.getState().folder : parent;
+  const path = await run((vault) => vault.createFolder(target));
   if (!path) return;
   await useVaultStore.getState().refreshEntries();
   useVaultStore.getState().setRenamingPath(path);

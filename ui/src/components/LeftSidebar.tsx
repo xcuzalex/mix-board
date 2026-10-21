@@ -52,7 +52,7 @@ function BoardTitle() {
           else if (e.key === 'Escape') finish(false);
         }}
         onBlur={() => finish(true)}
-        aria-label="画板名称"
+        aria-label="笔记名称"
         className="mx-1 w-44 rounded-md bg-white px-1.5 py-0.5 text-[13px] font-medium text-slate-800 outline-none ring-2 ring-[#007aff]/60 dark:bg-[#2c2c2e] dark:text-slate-100"
       />
     );

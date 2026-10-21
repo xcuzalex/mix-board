@@ -343,7 +343,7 @@ fn resolve_document<R: Runtime>(app: &AppHandle<R>, state: &VaultState, path: &s
     let scope = app.fs_scope();
     let resolved = document_path(vault.as_deref(), |path| scope.is_allowed(path), path)?;
     if resolved.is_dir() {
-        return Err(err("所选路径是文件夹，不是画板文件"));
+        return Err(err("所选路径是文件夹，不是笔记文件"));
     }
     Ok(resolved)
 }

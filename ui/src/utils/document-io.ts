@@ -81,14 +81,12 @@ function getSuggestedExportPath(path: string | null) {
   return /\.[^.]+$/u.test(path) ? replaceExtension(path, '.png') : `${path}.png`;
 }
 
-function createExportCanvas(elements: Element[], backgroundColor: string) {
-  if (elements.length === 0) return null;
-
+/** Bounding box of everything on the board (mindmaps by their laid-out tree). */
+function getBoardBounds(elements: Element[]) {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-
   for (const element of elements) {
     const bounds = getElementBounds(element, elements);
     minX = Math.min(minX, bounds.x);
@@ -96,6 +94,50 @@ function createExportCanvas(elements: Element[], backgroundColor: string) {
     maxX = Math.max(maxX, bounds.x + bounds.width);
     maxY = Math.max(maxY, bounds.y + bounds.height);
   }
+  return { minX, minY, maxX, maxY };
+}
+
+/** On-screen page colour: the default page follows the current theme. */
+export function boardBackground(appState: AppState) {
+  return isDefaultBackground(appState.viewBackgroundColor) ? canvasTheme.background : appState.viewBackgroundColor;
+}
+
+/**
+ * Renders the whole board scaled to fit `width` × `height` (CSS px) for a
+ * library thumbnail. Small boards are never enlarged past 100%. Returns null
+ * for an empty board.
+ */
+export function renderBoardThumbnail(elements: Element[], appState: AppState, width: number, height: number) {
+  if (elements.length === 0) return null;
+  const { minX, minY, maxX, maxY } = getBoardBounds(elements);
+  const padding = 16;
+  const boardWidth = Math.max(maxX - minX, 1);
+  const boardHeight = Math.max(maxY - minY, 1);
+  const zoom = Math.min(1, (width - padding * 2) / boardWidth, (height - padding * 2) / boardHeight);
+  const dpr = window.devicePixelRatio || 1;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(width * dpr);
+  canvas.height = Math.ceil(height * dpr);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const viewport = new Viewport();
+  viewport.update(
+    width / 2 - (minX + boardWidth / 2) * zoom,
+    height / 2 - (minY + boardHeight / 2) * zoom,
+    zoom,
+  );
+  const renderer = new Renderer(ctx, viewport);
+  renderer.backgroundDots = false;
+  renderer.setSize(width, height);
+  renderer.renderSceneLayer(elements, boardBackground(appState), false, 20);
+  return canvas;
+}
+
+function createExportCanvas(elements: Element[], backgroundColor: string) {
+  if (elements.length === 0) return null;
+  const { minX, minY, maxX, maxY } = getBoardBounds(elements);
 
   const padding = 40;
   const width = Math.max(maxX - minX + padding * 2, 1);
@@ -165,10 +207,7 @@ export async function exportCurrentBoardAsImage() {
   flushPendingCanvasInteractionState();
   const { elements, appState, filePath } = useDocumentStore.getState();
   // Match the screen: the default page colour follows the current theme.
-  const background = isDefaultBackground(appState.viewBackgroundColor)
-    ? canvasTheme.background
-    : appState.viewBackgroundColor;
-  const canvas = createExportCanvas(elements, background);
+  const canvas = createExportCanvas(elements, boardBackground(appState));
   if (!canvas) return null;
 
   const platform = await getPlatform();

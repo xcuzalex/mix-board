@@ -44,7 +44,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&quit)
         .build()?;
 
-    let file_new = item(app, "file.new", "新建画板", Some("CmdOrCtrl+N"))?;
+    let file_new = item(app, "file.new", "新建笔记", Some("CmdOrCtrl+N"))?;
     let file_library = item(app, "file.library", "资料库", Some("CmdOrCtrl+Shift+L"))?;
     let file_open = item(app, "file.open", "打开文件", Some("CmdOrCtrl+O"))?;
     let file_open_vault = item(app, "file.open_vault", "打开文件夹作为库…", Some("CmdOrCtrl+Shift+O"))?;

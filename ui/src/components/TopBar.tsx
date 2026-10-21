@@ -62,7 +62,7 @@ async function openDocumentFile() {
   if (doc.loadDocument(result.content)) {
     doc.setFilePath(result.path);
   } else {
-    useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 画板');
+    useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 笔记');
   }
 }
 
@@ -154,7 +154,10 @@ export function TopBar() {
   const statusTooltip = autosaveStatus === 'error'
     ? `自动保存失败：${autosaveError ?? '未知错误'}`
     : lastSavedAt !== null ? `上次保存 ${formatSavedAt(lastSavedAt)}` : undefined;
-  const windowTitle = `${fileName}${statusLabel ? ` — ${statusLabel}` : ''} - MixNote`;
+  const libraryOpen = useVaultStore((s) => s.libraryOpen);
+  // The note (and its save status), like a document window; the library page
+  // covers the note, so it names itself instead.
+  const windowTitle = libraryOpen ? '资料库' : `${fileName}${statusLabel ? ` — ${statusLabel}` : ''}`;
 
   // Subscribe once; actions read the stores when they run, so the listener
   // never holds stale state and can't be registered twice.

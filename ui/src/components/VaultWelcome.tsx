@@ -69,7 +69,7 @@ export function VaultWelcome() {
       >
         <div className="text-[20px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">欢迎使用 MixNote</div>
         <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-          选一个文件夹作为资料库，所有画板都会以 .mixnote 文件自动保存在里面，无需再选择保存位置。
+          选一个文件夹作为资料库，所有笔记都会以 .mixnote 文件自动保存在里面，无需再选择保存位置。
         </p>
 
         <div className="mt-5 flex flex-col gap-2.5">

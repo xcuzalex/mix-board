@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { VaultEntry } from '../platform';
 import { useDocumentStore } from '../store/document';
+import { useBoardThumbnail } from '../utils/thumbnails';
 import { isPathInside, useVaultStore, type LibrarySection } from '../store/vault';
 import {
   chooseLocalDraftsOnly,
   createBoard,
   createFolder,
-  isVaultBoard,
   openBoard,
   openICloudVault,
   openRecentVault,
@@ -18,7 +18,7 @@ import {
 
 /**
  * 资料库: a full page listing the vault, like Freeform's board browser.
- * Left: 全部画板 / 个人收藏 and the folder tree. Right: board cards, newest
+ * Left: 全部笔记 / 个人收藏 and the folder tree. Right: board cards, newest
  * first, with star, rename and move-to-Trash.
  */
 
@@ -156,6 +156,89 @@ function NavItem({ section, icon, label, count }: { section: LibrarySection; ico
   );
 }
 
+const FolderPlusIcon = (
+  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z" />
+    <path d="M12 11v5M9.5 13.5h5" />
+  </svg>
+);
+
+const MoreIcon = (
+  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+    <circle cx="5.5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="18.5" cy="12" r="1.7" />
+  </svg>
+);
+
+function MenuItem({ label, danger, onClick }: { label: string; danger?: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[13px] ${
+        danger
+          ? 'text-red-600 hover:bg-red-500/10 dark:text-red-400'
+          : 'text-slate-700 hover:bg-[#007aff] hover:text-white dark:text-slate-200'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Actions for one folder: a quick "new subfolder" button plus a ⋯ menu (also opened by right-click). */
+function FolderActions({ folder, menuOpen, setMenuOpen }: {
+  folder: VaultEntry;
+  menuOpen: boolean;
+  setMenuOpen: (open: boolean) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const setRenamingPath = useVaultStore((s) => s.setRenamingPath);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpen, setMenuOpen]);
+
+  const run = (action: () => void) => {
+    setMenuOpen(false);
+    action();
+  };
+
+  return (
+    <div ref={ref} className={`relative shrink-0 items-center ${menuOpen ? 'flex' : 'hidden group-hover:flex group-focus-within:flex'}`}>
+      <HoverAction title="新建子文件夹" onClick={() => void createFolder(folder.path)}>{FolderPlusIcon}</HoverAction>
+      <HoverAction title="更多操作" onClick={() => setMenuOpen(!menuOpen)}>{MoreIcon}</HoverAction>
+      {menuOpen && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-1 w-40 rounded-xl border border-black/[0.06] bg-white/95 p-1 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_12px_32px_rgba(0,0,0,0.16)] backdrop-blur-xl dark:border-white/10 dark:bg-[#2a2a2e]/95"
+        >
+          <MenuItem label="新建笔记" onClick={() => run(() => void createBoard(folder.path))} />
+          <MenuItem label="新建子文件夹" onClick={() => run(() => void createFolder(folder.path))} />
+          <MenuItem label="重命名" onClick={() => run(() => setRenamingPath(folder.path))} />
+          <div className="my-1 h-px bg-black/[0.06] dark:bg-white/10" />
+          <MenuItem label="移到废纸篓" danger onClick={() => run(() => void trashEntry(folder.path))} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FolderTree({ parent, depth, foldersByParent, expanded, toggle }: {
   parent: string;
   depth: number;
@@ -167,6 +250,7 @@ function FolderTree({ parent, depth, foldersByParent, expanded, toggle }: {
   const renamingPath = useVaultStore((s) => s.renamingPath);
   const setFolder = useVaultStore((s) => s.setFolder);
   const setRenamingPath = useVaultStore((s) => s.setRenamingPath);
+  const [menuPath, setMenuPath] = useState<string | null>(null);
 
   return (
     <>
@@ -182,6 +266,10 @@ function FolderTree({ parent, depth, foldersByParent, expanded, toggle }: {
               aria-expanded={hasChildren ? isOpen : undefined}
               onClick={() => setFolder(folder.path)}
               onDoubleClick={() => setRenamingPath(folder.path)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenuPath(folder.path);
+              }}
               className={`group flex h-8 cursor-default items-center gap-1.5 rounded-lg pr-1 text-[13px] transition ${
                 active ? 'bg-black/[0.07] font-medium text-slate-900 dark:bg-white/10 dark:text-white' : 'text-slate-600 hover:bg-black/[0.04] dark:text-slate-300 dark:hover:bg-white/5'
               }`}
@@ -207,10 +295,11 @@ function FolderTree({ parent, depth, foldersByParent, expanded, toggle }: {
               ) : (
                 <>
                   <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-                  <span className="hidden shrink-0 items-center group-hover:flex">
-                    <HoverAction title="重命名" onClick={() => setRenamingPath(folder.path)}>{PencilIcon}</HoverAction>
-                    <HoverAction title="移到废纸篓" onClick={() => void trashEntry(folder.path)}>{TrashIcon}</HoverAction>
-                  </span>
+                  <FolderActions
+                    folder={folder}
+                    menuOpen={menuPath === folder.path}
+                    setMenuOpen={(open) => setMenuPath(open ? folder.path : null)}
+                  />
                 </>
               )}
             </div>
@@ -295,16 +384,34 @@ function VaultSwitcher() {
 
 // --- Cards ---
 
+/** True once the element has scrolled into (or near) view; stays true after. */
+function useOnScreen(ref: React.RefObject<HTMLElement | null>) {
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (seen || !el) return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setSeen(true);
+    }, { rootMargin: '200px' });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, seen]);
+  return seen;
+}
+
 function BoardCard({ entry, location }: { entry: VaultEntry; location?: string }) {
   const isCurrent = useDocumentStore((s) => s.filePath === entry.path);
   const renaming = useVaultStore((s) => s.renamingPath === entry.path);
   const setRenamingPath = useVaultStore((s) => s.setRenamingPath);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const visible = useOnScreen(previewRef);
+  const thumbnail = useBoardThumbnail(entry.path, entry.modified, visible && entry.downloaded);
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`打开画板 ${entry.name}`}
+      aria-label={`打开笔记 ${entry.name}`}
       onClick={() => entry.downloaded && void openBoard(entry.path)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && entry.downloaded && !renaming) void openBoard(entry.path);
@@ -313,15 +420,24 @@ function BoardCard({ entry, location }: { entry: VaultEntry; location?: string }
       className={`group flex cursor-default flex-col rounded-2xl outline-none ${entry.downloaded ? '' : 'opacity-50'}`}
     >
       <div
+        ref={previewRef}
         className={`relative aspect-[4/3] overflow-hidden rounded-2xl border bg-white shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition group-hover:shadow-[0_6px_20px_rgba(0,0,0,0.10)] group-focus-visible:ring-2 group-focus-visible:ring-[#007aff] dark:bg-[#232327] ${
           isCurrent ? 'border-[#007aff]/60 ring-2 ring-[#007aff]/30' : 'border-black/[0.06] dark:border-white/10'
         }`}
       >
-        <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(0,0,0,0.07)_1px,transparent_1.2px)] [background-size:14px_14px] dark:bg-[radial-gradient(circle,rgba(255,255,255,0.07)_1px,transparent_1.2px)]" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="h-10 w-14 rotate-[-4deg] rounded-md bg-[#fff3a8] shadow-sm dark:bg-[#5c5426]" />
-          <div className="-ml-4 mt-6 h-8 w-12 rotate-[5deg] rounded-md bg-[#cfe8ff] shadow-sm dark:bg-[#24405c]" />
-        </div>
+        {thumbnail ? (
+          // The note's own content, scaled to fit.
+          <img src={thumbnail} alt="" draggable={false} className="absolute inset-0 h-full w-full object-contain" />
+        ) : (
+          <>
+            <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(0,0,0,0.07)_1px,transparent_1.2px)] [background-size:14px_14px] dark:bg-[radial-gradient(circle,rgba(255,255,255,0.07)_1px,transparent_1.2px)]" />
+            {/* Placeholder for an empty note (or while its preview renders) */}
+            <div className={`absolute inset-0 flex items-center justify-center transition-opacity ${thumbnail === undefined ? 'opacity-40' : ''}`}>
+              <div className="h-10 w-14 rotate-[-4deg] rounded-md bg-[#fff3a8] shadow-sm dark:bg-[#5c5426]" />
+              <div className="-ml-4 mt-6 h-8 w-12 rotate-[5deg] rounded-md bg-[#cfe8ff] shadow-sm dark:bg-[#24405c]" />
+            </div>
+          </>
+        )}
         <button
           type="button"
           title={entry.favorite ? '取消收藏' : '收藏'}
@@ -384,7 +500,7 @@ function NoVault() {
       <FolderGlyph className="h-12 w-12 text-[#007aff]/70" />
       <div className="text-[17px] font-semibold text-slate-800 dark:text-slate-100">还没有打开资料库</div>
       <p className="max-w-sm text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-        选一个文件夹作为资料库，所有画板都会以 .mixnote 文件自动保存在里面，可以分文件夹整理、收藏。
+        选一个文件夹作为资料库，所有笔记都会以 .mixnote 文件自动保存在里面，可以分文件夹整理、收藏。
       </p>
       <div className="mt-2 flex gap-2">
         <button type="button" onClick={() => void openICloudVault()} className="rounded-lg bg-[#007aff] px-3.5 py-1.5 text-[13px] font-medium text-white hover:bg-[#0062cc]">
@@ -408,6 +524,7 @@ export function LibraryPage() {
   const setFolder = useVaultStore((s) => s.setFolder);
   const refreshEntries = useVaultStore((s) => s.refreshEntries);
   const filePath = useDocumentStore((s) => s.filePath);
+  const hasUnsavedContent = useDocumentStore((s) => s.elements.length > 0);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -492,10 +609,12 @@ export function LibraryPage() {
   const relativeFolder = (path: string) => (path === root ? '' : path.slice(root.length + 1));
   const title = q
     ? `搜索“${query.trim()}”`
-    : section === 'favorites' ? '个人收藏' : folderPath ? folderPath.split('/').pop() : '全部画板';
+    : section === 'favorites' ? '个人收藏' : folderPath ? folderPath.split('/').pop() : '全部笔记';
   const breadcrumb = folderPath ? relativeFolder(folderPath).split('/').slice(0, -1) : [];
   const favoriteCount = boards.filter((b) => b.favorite).length;
-  const currentIsVaultBoard = isVaultBoard(filePath);
+  // "Back" only makes sense when a note is open behind the library: a saved
+  // one, or an untitled one with something on it.
+  const canGoBack = filePath !== null || hasUnsavedContent;
 
   return (
     <div
@@ -503,7 +622,7 @@ export function LibraryPage() {
       tabIndex={-1}
       data-overlay-panel
       onKeyDown={(e) => {
-        if (e.key === 'Escape' && !(e.target instanceof HTMLInputElement)) setLibraryOpen(false);
+        if (e.key === 'Escape' && canGoBack && !(e.target instanceof HTMLInputElement)) setLibraryOpen(false);
       }}
       className="absolute inset-0 z-50 flex bg-[#f5f5f7] outline-none dark:bg-[#141417]"
     >
@@ -512,7 +631,7 @@ export function LibraryPage() {
         <nav className="flex flex-col gap-0.5 px-2">
           <NavItem
             section="all"
-            label="全部画板"
+            label="全部笔记"
             count={boards.length}
             icon={(
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -529,8 +648,9 @@ export function LibraryPage() {
           {vault && (
             <button
               type="button"
-              title={folderPath ? '在当前文件夹中新建文件夹' : '新建文件夹'}
-              onClick={() => void createFolder()}
+              title="在资料库中新建文件夹"
+              aria-label="在资料库中新建文件夹"
+              onClick={() => void createFolder(null)}
               className="rounded-md p-0.5 text-slate-400 hover:bg-black/[0.06] hover:text-[#007aff] dark:hover:bg-white/10"
             >
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -552,17 +672,19 @@ export function LibraryPage() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 px-8 pb-4 pt-5">
-          <button
-            type="button"
-            onClick={() => setLibraryOpen(false)}
-            title="返回画板（Esc）"
-            className="flex h-8 items-center gap-1 rounded-full pl-1.5 pr-3 text-[13px] font-medium text-[#007aff] hover:bg-[#007aff]/10"
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M15 5l-7 7 7 7" />
-            </svg>
-            {currentIsVaultBoard ? '返回画板' : '返回'}
-          </button>
+          {canGoBack && (
+            <button
+              type="button"
+              onClick={() => setLibraryOpen(false)}
+              title="返回笔记（Esc）"
+              className="flex h-8 items-center gap-1 rounded-full pl-1.5 pr-3 text-[13px] font-medium text-[#007aff] hover:bg-[#007aff]/10"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 5l-7 7 7 7" />
+              </svg>
+              返回笔记
+            </button>
+          )}
           <div className="min-w-0 flex-1">
             {breadcrumb.length > 0 && !q && (
               <div className="truncate text-[11px] text-slate-400">{breadcrumb.join(' / ')}</div>
@@ -581,20 +703,29 @@ export function LibraryPage() {
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') setQuery('');
                   }}
-                  placeholder="搜索全部画板"
+                  placeholder="搜索全部笔记"
                   className="min-w-0 flex-1 bg-transparent text-[13px] text-slate-700 outline-none placeholder:text-slate-400 dark:text-slate-200"
                 />
               </div>
               <button
                 type="button"
+                onClick={() => void createFolder()}
+                title={folderPath ? `在「${title}」中新建文件夹` : '在资料库中新建文件夹'}
+                className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-slate-600 hover:bg-black/[0.05] dark:text-slate-300 dark:hover:bg-white/10"
+              >
+                {FolderPlusIcon}
+                新建文件夹
+              </button>
+              <button
+                type="button"
                 onClick={() => void createBoard()}
-                title={folderPath ? `在「${title}」中新建画板（⌘N）` : '新建画板（⌘N）'}
+                title={folderPath ? `在「${title}」中新建笔记（⌘N）` : '新建笔记（⌘N）'}
                 className="flex h-8 items-center gap-1.5 rounded-lg bg-[#007aff] px-3 text-[13px] font-medium text-white shadow-sm hover:bg-[#0062cc]"
               >
                 <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                   <path d="M12 5v14M5 12h14" />
                 </svg>
-                新建画板
+                新建笔记
               </button>
             </>
           )}
@@ -623,10 +754,10 @@ export function LibraryPage() {
               </div>
             ) : (
               <div className="flex flex-col items-center py-20 text-center text-[13px] leading-relaxed text-slate-400 dark:text-slate-500">
-                {q ? '没有匹配的画板'
-                  : section === 'favorites' ? <>还没有收藏的画板。<br />把鼠标移到画板上，点右上角的星标即可收藏。</>
+                {q ? '没有匹配的笔记'
+                  : section === 'favorites' ? <>还没有收藏的笔记。<br />把鼠标移到笔记上，点右上角的星标即可收藏。</>
                     : folderPath ? (visible.folders.length > 0 ? '' : '这个文件夹是空的')
-                      : <>还没有画板。<br />点右上角「新建画板」开始记录。</>}
+                      : <>还没有笔记。<br />点右上角「新建笔记」开始记录。</>}
               </div>
             )}
           </div>
