@@ -9,7 +9,7 @@ import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-
 import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 import { createBoard, openBoard, openLibrary, pickVaultFolder } from '../utils/vault';
 
-const NATIVE_MENU_EVENT = 'mixboard-native-menu';
+const NATIVE_MENU_EVENT = 'mixnote-native-menu';
 
 const AUTOSAVE_LABELS: Record<AutosaveStatus, string> = {
   idle: '',
@@ -76,7 +76,7 @@ export function TopBar() {
   const statusTooltip = autosaveStatus === 'error'
     ? `自动保存失败：${autosaveError ?? '未知错误'}`
     : lastSavedAt !== null ? `上次保存 ${formatSavedAt(lastSavedAt)}` : undefined;
-  const windowTitle = `${fileName}${statusLabel ? ` — ${statusLabel}` : ''} - MixBoard`;
+  const windowTitle = `${fileName}${statusLabel ? ` — ${statusLabel}` : ''} - MixNote`;
 
   const handleOpen = async () => {
     flushPendingCanvasInteractionState();

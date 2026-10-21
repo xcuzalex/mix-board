@@ -1,4 +1,4 @@
-# MixBoard
+# MixNote
 
 无限画布 / 白板应用。可作为静态网页运行，也可打包为 macOS 原生桌面应用（Tauri v2）。
 
@@ -44,7 +44,7 @@
 - 键盘操作：Tab（添加子节点）、Enter（添加兄弟节点）
 
 ### 文件操作
-- 保存 / 打开 `.mixboard` 文件（JSON 格式）
+- 保存 / 打开 `.mixnote` 文件（JSON 格式）
 - 导出画布为 PNG（带 40px 边距）
 - 桌面端：原生文件对话框，直接读写文件系统
 - 网页端：文件选择框输入，Blob 下载
@@ -158,13 +158,13 @@ cd ui && npm run tauri:build
 
 ## 文档格式
 
-文件使用 `.mixboard` 扩展名（JSON 格式）：
+文件使用 `.mixnote` 扩展名（JSON 格式）：
 
 ```json
 {
-  "type": "mixboard",
+  "type": "mixnote",
   "version": 1,
-  "source": "MixBoard/0.1.0",
+  "source": "MixNote/0.1.0",
   "elements": [...],
   "appState": {
     "viewBackgroundColor": "#ffffff",
@@ -184,9 +184,7 @@ mix-board/
 ├── Cargo.toml                   # Rust 工作区
 ├── run.sh                       # 一键启动脚本
 ├── crates/
-│   ├── mixboard-core/           # 共享 Rust 模型（元素、几何、脑图、历史）
-│   ├── mixboard-tauri/          # Tauri 桌面壳 + IPC 命令
-│   └── mixboard-wasm/           # WASM 绑定
+│   └── mixnote-tauri/           # Tauri 桌面壳 + IPC 命令
 └── ui/
     └── src/
         ├── canvas/              # 渲染器、交互、碰撞检测、连接器

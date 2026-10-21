@@ -17,7 +17,7 @@ export interface VaultStatus {
 export interface VaultEntry {
   path: string;
   parent: string;
-  /** Folder name, or board file name without `.mixboard`. */
+  /** Folder name, or board file name without its extension. */
   name: string;
   kind: 'folder' | 'board';
   /** Milliseconds since the epoch. */
@@ -29,7 +29,7 @@ export interface VaultEntry {
 }
 
 /**
- * A vault is one folder of `*.mixboard` boards (desktop only). The native side
+ * A vault is one folder of `*.mixnote` boards (desktop only). The native side
  * owns which folder that is and rejects paths outside it.
  */
 export interface VaultBridge {
@@ -43,7 +43,7 @@ export interface VaultBridge {
   setLastBoard(path: string | null): Promise<void>;
   list(): Promise<VaultEntry[]>;
   setFavorite(path: string, favorite: boolean): Promise<void>;
-  /** Creates `未命名 N.mixboard` in `dir` (vault root when null); returns its path. */
+  /** Creates `未命名 N.mixnote` in `dir` (vault root when null); returns its path. */
   createBoard(dir: string | null, content: string): Promise<string>;
   createFolder(dir: string | null): Promise<string>;
   /** Renames in place (boards keep their extension); returns the new path. */

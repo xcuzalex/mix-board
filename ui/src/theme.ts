@@ -6,6 +6,7 @@
 export type Theme = 'light' | 'dark' | 'system';
 export type EffectiveTheme = 'light' | 'dark';
 
+// Pre-rename key, kept so the saved preference survives.
 const STORAGE_KEY = 'mixboard-theme';
 
 export function prefersDark(): boolean {

@@ -384,7 +384,7 @@ function NoVault() {
       <FolderGlyph className="h-12 w-12 text-[#007aff]/70" />
       <div className="text-[17px] font-semibold text-slate-800 dark:text-slate-100">还没有打开资料库</div>
       <p className="max-w-sm text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-        选一个文件夹作为资料库，所有画板都会以 .mixboard 文件自动保存在里面，可以分文件夹整理、收藏。
+        选一个文件夹作为资料库，所有画板都会以 .mixnote 文件自动保存在里面，可以分文件夹整理、收藏。
       </p>
       <div className="mt-2 flex gap-2">
         <button type="button" onClick={() => void openICloudVault()} className="rounded-lg bg-[#007aff] px-3.5 py-1.5 text-[13px] font-medium text-white hover:bg-[#0062cc]">

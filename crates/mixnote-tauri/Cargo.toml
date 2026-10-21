@@ -1,5 +1,5 @@
 [package]
-name = "mixboard-tauri"
+name = "mixnote-tauri"
 version = "0.1.0"
 edition = "2024"
 

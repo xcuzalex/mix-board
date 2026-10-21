@@ -27,9 +27,9 @@ pnpm run tauri:build            # Build macOS .dmg (from ui/)
 **Dual-target app**: same React frontend runs as a web app (browser) or desktop app (Tauri v2 on macOS). A platform abstraction layer (`ui/src/platform/`) switches between Tauri IPC and browser APIs at runtime.
 
 **Rust workspace** (`crates/`):
-- `mixboard-tauri` — the only crate: Tauri v2 app shell. A single IPC command (`get_icloud_path`), native menus, and plugin setup (dialog, fs). The domain model (elements, document, geometry, mindmap layout, history, serialization) lives entirely in TypeScript under `ui/src/` — there is no Rust core or WASM build. The AI assistant feature was removed.
+- `mixnote-tauri` — the only crate: Tauri v2 app shell. IPC commands for the vault (资料库: a user-chosen folder of `.mixnote` boards, see `src/vault.rs`) and quit-time autosave flush, plus `get_icloud_path`, native menus and plugin setup (dialog, fs). The domain model (elements, document, geometry, mindmap layout, history, serialization) lives entirely in TypeScript under `ui/src/` — there is no Rust core or WASM build. The AI assistant feature was removed.
 
-> Note: `mixboard-core` and `mixboard-wasm` were removed (dead code — the UI never imported them and their logic was reimplemented in TS). Don't reintroduce a Rust core unless there's a concrete need (native perf for large-doc layout, or a non-Tauri browser build reusing one model).
+> Note: the old `mixboard-core` and `mixboard-wasm` crates were removed (dead code — the UI never imported them and their logic was reimplemented in TS). Don't reintroduce a Rust core unless there's a concrete need (native perf for large-doc layout, or a non-Tauri browser build reusing one model).
 
 **Frontend** (`ui/src/`):
 - `canvas/` — All canvas logic, separated by concern:

@@ -67,9 +67,9 @@ export function VaultWelcome() {
         aria-label="选择资料库"
         className="w-full max-w-md rounded-[24px] border border-black/[0.06] bg-white/90 p-6 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_24px_64px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-[#1c1c1e]/95"
       >
-        <div className="text-[20px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">欢迎使用 MixBoard</div>
+        <div className="text-[20px] font-semibold tracking-tight text-slate-900 dark:text-slate-50">欢迎使用 MixNote</div>
         <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-          选一个文件夹作为资料库，所有画板都会以 .mixboard 文件自动保存在里面，无需再选择保存位置。
+          选一个文件夹作为资料库，所有画板都会以 .mixnote 文件自动保存在里面，无需再选择保存位置。
         </p>
 
         <div className="mt-5 flex flex-col gap-2.5">
@@ -78,7 +78,7 @@ export function VaultWelcome() {
             disabled={busy}
             onClick={choose(openICloudVault)}
             title="使用 iCloud 云盘（推荐）"
-            detail="存放在 iCloud 云盘/MixBoard，在你的所有 Mac 间同步"
+            detail="存放在 iCloud 云盘/MixNote，在你的所有 Mac 间同步"
             icon={(
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.25 4.25 0 0 1-.5 8.5H7z" />

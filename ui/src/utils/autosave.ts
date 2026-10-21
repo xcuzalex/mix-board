@@ -14,13 +14,14 @@ import { serializeDocument } from './document-io';
 // elements. The one write it makes is clearing `isDirty` after a silent save.
 
 const AUTOSAVE_DELAY_MS = 1500;
+// Storage names keep the pre-rename prefix so existing drafts survive.
 const DB_NAME = 'mixboard';
 const DB_VERSION = 1;
 const DRAFT_STORE = 'drafts';
 // One window, one document: a single draft slot is enough.
 const DRAFT_KEY = 'current';
 // Sent by the Rust side before quitting; answered with `quit_flush_done`.
-const QUIT_FLUSH_EVENT = 'mixboard-flush-before-quit';
+const QUIT_FLUSH_EVENT = 'mixnote-flush-before-quit';
 
 export type AutosaveStatus =
   | 'idle' // nothing edited since open/new
@@ -155,7 +156,7 @@ function checkForDraft() {
 // --- Saving ---
 
 /**
- * With a vault open, an untitled board becomes `未命名 N.mixboard` in the vault
+ * With a vault open, an untitled board becomes `未命名 N.mixnote` in the vault
  * on its first save: no dialog. Returns the new path, or null without a vault.
  */
 async function createBoardInVault(snapshot: Snapshot) {

@@ -1,5 +1,6 @@
 //! The vault ("资料库"): one user-chosen folder holding every board as a
-//! `*.mixboard` file. The webview never gets a free-form path into this
+//! `*.mixnote` file (boards from the MixBoard days, `*.mixboard`, still
+//! open). The webview never gets a free-form path into this
 //! module: a vault root is only set from the native folder picker, the iCloud
 //! folder, or the recent list kept here, and every file command checks that its
 //! target lies inside the open vault. Opening a vault also grants the fs plugin
@@ -18,14 +19,20 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::FsExt;
 
 const CONFIG_FILE: &str = "vaults.json";
-const BOARD_EXTENSION: &str = "mixboard";
+const BOARD_EXTENSION: &str = "mixnote";
+/// Boards created before the MixNote rename; still listed and opened.
+const LEGACY_BOARD_EXTENSION: &str = "mixboard";
 const ICLOUD_PLACEHOLDER_SUFFIX: &str = ".icloud";
 const MAX_RECENT: usize = 8;
 const MAX_DEPTH: usize = 12;
 const UNTITLED_BOARD: &str = "未命名";
 const UNTITLED_FOLDER: &str = "新建文件夹";
 /// Per-vault metadata folder; it travels (and syncs) with the vault.
-const META_DIR: &str = ".mixboard";
+const META_DIR: &str = ".mixnote";
+/// Metadata folder from before the rename; read when the new one is absent.
+const LEGACY_META_DIR: &str = ".mixboard";
+/// App config folder from before the bundle identifier changed.
+const LEGACY_CONFIG_DIR: &str = "com.mixboard.whiteboard";
 const FAVORITES_FILE: &str = "favorites.json";
 
 #[derive(Default, Serialize, Deserialize)]
@@ -76,7 +83,7 @@ pub struct VaultEntry {
     modified: u64,
     /// False for iCloud placeholders that haven't been downloaded yet.
     downloaded: bool,
-    /// Starred in the library (stored in `<vault>/.mixboard/favorites.json`).
+    /// Starred in the library (stored in `<vault>/.mixnote/favorites.json`).
     favorite: bool,
 }
 
@@ -103,7 +110,7 @@ fn vault_info(path: &Path) -> VaultInfo {
 pub fn icloud_vault_dir() -> Option<PathBuf> {
     let dir = dirs::home_dir()?
         .join("Library/Mobile Documents/com~apple~CloudDocs")
-        .join("MixBoard");
+        .join("MixNote");
     if dir.is_dir() || fs::create_dir_all(&dir).is_ok() {
         Some(dir)
     } else {
@@ -114,9 +121,14 @@ pub fn icloud_vault_dir() -> Option<PathBuf> {
 impl VaultState {
     pub fn load<R: Runtime>(app: &AppHandle<R>) -> Self {
         let config_path = app.path().app_config_dir().ok().map(|dir| dir.join(CONFIG_FILE));
+        // Fall back to the config saved under the old bundle identifier.
+        let legacy_path = config_path
+            .as_ref()
+            .and_then(|path| path.parent()?.parent().map(|dir| dir.join(LEGACY_CONFIG_DIR).join(CONFIG_FILE)));
         let mut config: VaultConfig = config_path
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
+            .or_else(|| legacy_path.and_then(|path| fs::read_to_string(path).ok()))
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
 
@@ -234,7 +246,9 @@ fn validate_name(name: &str) -> CommandResult<&str> {
 }
 
 fn is_board(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case(BOARD_EXTENSION))
+    path.extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case(BOARD_EXTENSION) || ext.eq_ignore_ascii_case(LEGACY_BOARD_EXTENSION)
+    })
 }
 
 fn modified_ms(metadata: &fs::Metadata) -> u64 {
@@ -336,6 +350,7 @@ fn favorites_file(root: &Path) -> PathBuf {
 
 fn read_favorites(root: &Path) -> Vec<String> {
     fs::read_to_string(favorites_file(root))
+        .or_else(|_| fs::read_to_string(root.join(LEGACY_META_DIR).join(FAVORITES_FILE)))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
@@ -498,7 +513,7 @@ pub fn vault_set_favorite(state: State<'_, VaultState>, path: String, favorite: 
     write_favorites(&root, &favorites)
 }
 
-/// Creates `未命名 N.mixboard` in `dir` (the vault root when omitted) holding
+/// Creates `未命名 N.mixnote` in `dir` (the vault root when omitted) holding
 /// `content`, and returns its path.
 #[tauri::command]
 pub fn vault_create_board(state: State<'_, VaultState>, dir: Option<String>, content: String) -> CommandResult<String> {
@@ -529,7 +544,9 @@ pub fn vault_rename(state: State<'_, VaultState>, path: String, name: String) ->
     }
     let name = validate_name(&name)?;
     let file_name = if source.is_file() && is_board(&source) {
-        format!("{name}.{BOARD_EXTENSION}")
+        // Keep the board's own extension (a legacy `.mixboard` stays one).
+        let ext = source.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| BOARD_EXTENSION.into());
+        format!("{name}.{ext}")
     } else {
         name.to_string()
     };
@@ -574,16 +591,16 @@ mod tests {
     #[test]
     fn favorites_follow_renames_and_trash() {
         let root = temp_vault("favorites");
-        write_favorites(&root, &["项目/a.mixboard".into(), "项目2/b.mixboard".into(), "c.mixboard".into()]).unwrap();
+        write_favorites(&root, &["项目/a.mixnote".into(), "项目2/b.mixnote".into(), "c.mixnote".into()]).unwrap();
         update_favorites(&root, &root.join("项目"), Some(&root.join("工作")));
-        assert_eq!(read_favorites(&root), vec!["工作/a.mixboard", "项目2/b.mixboard", "c.mixboard"]);
-        update_favorites(&root, &root.join("c.mixboard"), None);
-        assert_eq!(read_favorites(&root), vec!["工作/a.mixboard", "项目2/b.mixboard"]);
+        assert_eq!(read_favorites(&root), vec!["工作/a.mixnote", "项目2/b.mixnote", "c.mixnote"]);
+        update_favorites(&root, &root.join("c.mixnote"), None);
+        assert_eq!(read_favorites(&root), vec!["工作/a.mixnote", "项目2/b.mixnote"]);
         fs::remove_dir_all(&root).unwrap();
     }
 
     fn temp_vault(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("mixboard-vault-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mixnote-vault-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
@@ -596,13 +613,25 @@ mod tests {
         let s = |p: &Path| p.to_string_lossy().to_string();
 
         assert!(inside_vault(&root, &s(&root.join("notes"))).is_ok());
-        assert!(inside_vault(&root, &s(&root.join("notes/new.mixboard"))).is_ok());
+        assert!(inside_vault(&root, &s(&root.join("notes/new.mixnote"))).is_ok());
         assert!(inside_vault(&root, &s(&root)).is_err(), "the root itself is not an entry");
-        assert!(inside_vault(&root, &s(&root.join("../escape.mixboard"))).is_err());
-        assert!(inside_vault(&root, "relative.mixboard").is_err());
+        assert!(inside_vault(&root, &s(&root.join("../escape.mixnote"))).is_err());
+        assert!(inside_vault(&root, "relative.mixnote").is_err());
         assert!(inside_vault(&root, "/etc/hosts").is_err());
         assert!(folder_in_vault(&root, None).unwrap() == root);
         assert!(folder_in_vault(&root, Some(&s(&root.join("missing")))).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_boards_and_favorites_still_work() {
+        let root = temp_vault("legacy");
+        assert!(is_board(&root.join("old.mixboard")));
+        assert!(is_board(&root.join("new.mixnote")));
+        assert!(!is_board(&root.join("notes.json")));
+        fs::create_dir(root.join(LEGACY_META_DIR)).unwrap();
+        fs::write(root.join(LEGACY_META_DIR).join(FAVORITES_FILE), r#"["old.mixboard"]"#).unwrap();
+        assert_eq!(read_favorites(&root), vec!["old.mixboard"]);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -621,8 +650,8 @@ mod tests {
         let make = |path: &Path| fs::OpenOptions::new().write(true).create_new(true).open(path).map(|_| ());
         let first = create_unique(&root, UNTITLED_BOARD, Some(BOARD_EXTENSION), make).unwrap();
         let second = create_unique(&root, UNTITLED_BOARD, Some(BOARD_EXTENSION), make).unwrap();
-        assert_eq!(first.file_name().unwrap(), "未命名.mixboard");
-        assert_eq!(second.file_name().unwrap(), "未命名 2.mixboard");
+        assert_eq!(first.file_name().unwrap(), "未命名.mixnote");
+        assert_eq!(second.file_name().unwrap(), "未命名 2.mixnote");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -630,11 +659,12 @@ mod tests {
     fn listing_finds_boards_folders_and_icloud_placeholders() {
         let root = temp_vault("list");
         fs::create_dir(root.join("项目")).unwrap();
-        fs::create_dir(root.join(".mixboard")).unwrap();
-        fs::write(root.join("a.mixboard"), "{}").unwrap();
+        fs::create_dir(root.join(".mixnote")).unwrap();
+        fs::write(root.join("a.mixnote"), "{}").unwrap();
+        // Boards from before the rename are still listed.
         fs::write(root.join("项目/b.mixboard"), "{}").unwrap();
         fs::write(root.join("notes.txt"), "").unwrap();
-        fs::write(root.join(".c.mixboard.icloud"), "").unwrap();
+        fs::write(root.join(".c.mixnote.icloud"), "").unwrap();
 
         let mut entries = Vec::new();
         walk(&root, 0, &mut entries);

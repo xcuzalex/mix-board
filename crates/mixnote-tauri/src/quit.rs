@@ -6,7 +6,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, ExitRequestApi, Manager, Runtime, State};
 
 /// Asks the webview to write unsaved edits; it answers with `quit_flush_done`.
-pub const FLUSH_EVENT_NAME: &str = "mixboard-flush-before-quit";
+pub const FLUSH_EVENT_NAME: &str = "mixnote-flush-before-quit";
 /// Quit anyway if the webview doesn't answer (crashed, still loading, stuck write).
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 

@@ -5,8 +5,8 @@ import { documentDir, join } from '@tauri-apps/api/path';
 import { useVaultStore } from '../store/vault';
 import type { PlatformBridge, VaultBridge, VaultEntry, VaultStatus } from './index';
 
-const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
-const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
+const DEFAULT_DOCUMENT_NAME = '未命名.mixnote';
+const DEFAULT_EXPORT_NAME = 'mixnote-export.png';
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string) {
   return new Promise<Blob | null>((resolve) => {
@@ -53,9 +53,9 @@ export class TauriBridge implements PlatformBridge {
 
   async openFile(): Promise<{ path: string; content: string } | null> {
     const selected = await open({
-      title: '打开 MixBoard 文件',
+      title: '打开 MixNote 文件',
       defaultPath: await inDocuments(''),
-      filters: [{ name: 'MixBoard', extensions: ['mixboard', 'json'] }],
+      filters: [{ name: 'MixNote', extensions: ['mixnote', 'mixboard', 'json'] }],
     });
     if (!selected) return null;
     const content = await readTextFile(selected as string);
@@ -64,9 +64,9 @@ export class TauriBridge implements PlatformBridge {
 
   async saveAsFile(data: string, defaultPath?: string): Promise<string | null> {
     const path = await save({
-      title: '保存 MixBoard 文件',
+      title: '保存 MixNote 文件',
       defaultPath: await inDocuments(defaultPath ?? DEFAULT_DOCUMENT_NAME),
-      filters: [{ name: 'MixBoard', extensions: ['mixboard'] }],
+      filters: [{ name: 'MixNote', extensions: ['mixnote'] }],
     });
     if (!path) return null;
     await writeTextFile(path, data);

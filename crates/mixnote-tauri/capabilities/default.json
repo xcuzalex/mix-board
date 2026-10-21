@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for MixBoard",
+  "description": "Default capabilities for MixNote",
   "windows": ["main"],
   "permissions": [
     "core:default",

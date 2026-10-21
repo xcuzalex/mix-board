@@ -160,7 +160,7 @@ export async function setFavorite(path: string, favorite: boolean) {
 }
 
 /**
- * New board: with a vault, a `未命名 N.mixboard` file is created right away in
+ * New board: with a vault, a `未命名 N.mixnote` file is created right away in
  * the selected folder and its name opens for editing. Without one, a blank
  * untitled board (saved as a local draft).
  */

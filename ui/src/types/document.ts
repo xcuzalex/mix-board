@@ -13,8 +13,9 @@ export interface EmbeddedFile {
   created: number;
 }
 
-export interface MixBoardDocument {
-  type: 'mixboard';
+export interface MixNoteDocument {
+  /** 'mixboard' in files saved before the rename. */
+  type: 'mixnote' | 'mixboard';
   version: number;
   source: string;
   elements: Element[];
@@ -22,11 +23,11 @@ export interface MixBoardDocument {
   files: Record<string, EmbeddedFile>;
 }
 
-export function createDocument(): MixBoardDocument {
+export function createDocument(): MixNoteDocument {
   return {
-    type: 'mixboard',
+    type: 'mixnote',
     version: 1,
-    source: 'MixBoard/0.1.0',
+    source: 'MixNote/0.1.0',
     elements: [],
     appState: {
       viewBackgroundColor: '#ffffff',

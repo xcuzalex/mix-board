@@ -72,6 +72,7 @@ interface UIStore {
   cycleTheme: () => void;
 }
 
+// Pre-rename key, kept so the saved preference survives.
 const DOTS_STORAGE_KEY = 'mixboard.canvas.dots';
 
 function loadStoredDots() {

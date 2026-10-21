@@ -1,7 +1,7 @@
 import type { PlatformBridge } from './index';
 
-const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
-const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
+const DEFAULT_DOCUMENT_NAME = '未命名.mixnote';
+const DEFAULT_EXPORT_NAME = 'mixnote-export.png';
 
 function getDownloadFileName(defaultPath: string | undefined, fallback: string) {
   if (!defaultPath) return fallback;
@@ -39,7 +39,7 @@ export class WebBridge implements PlatformBridge {
     return new Promise((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.mixboard,.json';
+      input.accept = '.mixnote,.mixboard,.json';
       input.onchange = async (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (!file) return resolve(null);
@@ -73,7 +73,7 @@ export class WebBridge implements PlatformBridge {
   }
 
   async saveTextFile(data: string, defaultPath: string, _filter: { name: string; extensions: string[] }): Promise<string | null> {
-    const fileName = getDownloadFileName(defaultPath, 'mixboard.md');
+    const fileName = getDownloadFileName(defaultPath, 'mixnote.md');
     downloadBlob(new Blob([data], { type: 'text/markdown;charset=utf-8' }), fileName);
     return fileName;
   }

@@ -11,8 +11,8 @@ import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
 import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
 
-const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
-const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
+const DEFAULT_DOCUMENT_NAME = '未命名.mixnote';
+const DEFAULT_EXPORT_NAME = 'mixnote-export.png';
 
 function getElementBounds(element: Element, elements: Element[]) {
   if (element.type === 'line' || element.type === 'arrow') {
@@ -44,9 +44,9 @@ export function serializeDocument(
   files: Record<string, EmbeddedFile>,
 ) {
   return JSON.stringify({
-    type: 'mixboard',
+    type: 'mixnote',
     version: 1,
-    source: 'MixBoard/0.1.0',
+    source: 'MixNote/0.1.0',
     elements,
     appState,
     files,
@@ -115,7 +115,7 @@ function createExportCanvas(elements: Element[], backgroundColor: string) {
 
 export function getDocumentDisplayName(path: string | null) {
   const fileName = getFileName(path, DEFAULT_DOCUMENT_NAME);
-  return fileName.replace(/\.mixboard$/iu, '');
+  return fileName.replace(/\.(?:mixnote|mixboard)$/iu, '');
 }
 
 export async function saveCurrentDocument() {

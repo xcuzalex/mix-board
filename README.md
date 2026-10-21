@@ -1,4 +1,4 @@
-# MixBoard
+# MixNote
 
 An infinite canvas / whiteboard application. Runs as a static web app or a native macOS desktop app (Tauri v2).
 
@@ -44,7 +44,7 @@ Pill, hexagon, octagon, parallelogram, trapezoid, star, speech bubble, cloud, cy
 - Keyboard-driven: Tab (add child), Enter (add sibling)
 
 ### File Operations
-- Save / open `.mixboard` files (JSON format)
+- Save / open `.mixnote` files (JSON format)
 - Export canvas as PNG (with 40px padding)
 - Desktop: native file dialogs, direct filesystem access
 - Web: file picker input, blob download
@@ -158,13 +158,13 @@ cd ui && npm run tauri:build
 
 ## Document Format
 
-Files use the `.mixboard` extension (JSON):
+Files use the `.mixnote` extension (JSON):
 
 ```json
 {
-  "type": "mixboard",
+  "type": "mixnote",
   "version": 1,
-  "source": "MixBoard/0.1.0",
+  "source": "MixNote/0.1.0",
   "elements": [...],
   "appState": {
     "viewBackgroundColor": "#ffffff",
@@ -184,9 +184,7 @@ mix-board/
 ├── Cargo.toml                   # Rust workspace
 ├── run.sh                       # One-command startup
 ├── crates/
-│   ├── mixboard-core/           # Shared Rust models (elements, geometry, mindmap, history)
-│   ├── mixboard-tauri/          # Tauri desktop shell + IPC commands
-│   └── mixboard-wasm/           # WASM bindings
+│   └── mixnote-tauri/           # Tauri desktop shell + IPC commands
 └── ui/
     └── src/
         ├── canvas/              # Renderer, interaction, hit-test, connectors

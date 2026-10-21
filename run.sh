@@ -7,11 +7,11 @@ UI_DIR="$ROOT_DIR/ui"
 MODE="${1:-web}"
 DEV_URL="http://localhost:5173"
 FRONTEND_PID=""
-FRONTEND_LOG="/tmp/mixboard-ui-dev.log"
+FRONTEND_LOG="/tmp/mixnote-ui-dev.log"
 
 print_help() {
   cat <<'EOF'
-MixBoard startup script
+MixNote startup script
 
 Usage:
   ./run.sh               Start frontend dev environment
@@ -46,7 +46,7 @@ wait_for_dev_server() {
   until is_dev_server_running; do
     count=$((count + 1))
     if [ "$count" -ge "$retries" ]; then
-      echo "[MixBoard] Frontend dev server startup timed out. Check logs: $FRONTEND_LOG"
+      echo "[MixNote] Frontend dev server startup timed out. Check logs: $FRONTEND_LOG"
       exit 1
     fi
     sleep 1
@@ -57,14 +57,14 @@ ensure_ui_dependencies() {
   require_cmd npm
 
   if [ ! -d "$UI_DIR/node_modules" ]; then
-    echo "[MixBoard] First run, installing frontend dependencies..."
+    echo "[MixNote] First run, installing frontend dependencies..."
     (cd "$UI_DIR" && npm install)
   fi
 }
 
 run_web() {
   ensure_ui_dependencies
-  echo "[MixBoard] Starting frontend dev environment: $DEV_URL"
+  echo "[MixNote] Starting frontend dev environment: $DEV_URL"
   cd "$UI_DIR"
   npm run dev
 }
@@ -78,19 +78,19 @@ run_desktop() {
   trap cleanup EXIT INT TERM
 
   if is_dev_server_running; then
-    echo "[MixBoard] Frontend dev server already running: $DEV_URL"
+    echo "[MixNote] Frontend dev server already running: $DEV_URL"
   else
-    echo "[MixBoard] Starting frontend dev server..."
+    echo "[MixNote] Starting frontend dev server..."
     (
       cd "$UI_DIR"
       npm run dev -- --host 127.0.0.1 --strictPort
     ) >"$FRONTEND_LOG" 2>&1 &
     FRONTEND_PID=$!
     wait_for_dev_server
-    echo "[MixBoard] Frontend dev server ready: $DEV_URL"
+    echo "[MixNote] Frontend dev server ready: $DEV_URL"
   fi
 
-  echo "[MixBoard] Starting Tauri desktop dev environment..."
+  echo "[MixNote] Starting Tauri desktop dev environment..."
   cd "$UI_DIR"
   npm run tauri:dev
 }

@@ -32,6 +32,7 @@ const DRAW_TOOLS: Array<{ tool: ToolType; label: string }> = [
 
 const DRAW_TOOL_SET = new Set<ToolType>(['arrow', 'line', 'freedraw', 'section', 'image']);
 
+// Pre-rename key, kept so the saved preference survives.
 const PIN_STORAGE_KEY = 'mixboard.toolbar.pinned';
 const REVEAL_ZONE_PX = 60;
 const AUTO_HIDE_DELAY_MS = 900;

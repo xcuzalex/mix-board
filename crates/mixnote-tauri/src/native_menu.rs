@@ -1,7 +1,7 @@
 use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
-pub const MENU_EVENT_NAME: &str = "mixboard-native-menu";
+pub const MENU_EVENT_NAME: &str = "mixnote-native-menu";
 
 fn item<R: Runtime, M: Manager<R>>(
     manager: &M,
@@ -19,22 +19,22 @@ fn item<R: Runtime, M: Manager<R>>(
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let about = PredefinedMenuItem::about(
         app,
-        Some("关于 MixBoard"),
+        Some("关于 MixNote"),
         Some(AboutMetadata {
-            name: Some("MixBoard".into()),
+            name: Some("MixNote".into()),
             version: Some("0.1.0".into()),
             website: Some("https://github.com".into()),
             ..Default::default()
         }),
     )?;
     let services = PredefinedMenuItem::services(app, Some("服务"))?;
-    let hide = PredefinedMenuItem::hide(app, Some("隐藏 MixBoard"))?;
+    let hide = PredefinedMenuItem::hide(app, Some("隐藏 MixNote"))?;
     let hide_others = PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?;
     let show_all = PredefinedMenuItem::show_all(app, Some("显示全部"))?;
     // Not PredefinedMenuItem::quit: that calls -[NSApp terminate:], which exits
     // without an ExitRequested event, so autosave never gets to flush.
-    let quit = item(app, "app.quit", "退出 MixBoard", Some("CmdOrCtrl+Q"))?;
-    let app_menu = SubmenuBuilder::new(app, "MixBoard")
+    let quit = item(app, "app.quit", "退出 MixNote", Some("CmdOrCtrl+Q"))?;
+    let app_menu = SubmenuBuilder::new(app, "MixNote")
         .item(&about)
         .item(&services)
         .separator()
@@ -135,7 +135,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&window_maximize)
         .build()?;
 
-    let help_about = item(app, "help.about", "关于 MixBoard", None)?;
+    let help_about = item(app, "help.about", "关于 MixNote", None)?;
     let help_menu = SubmenuBuilder::new(app, "帮助")
         .item(&help_about)
         .build()?;
