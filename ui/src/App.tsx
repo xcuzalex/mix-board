@@ -15,7 +15,9 @@ import { startAutosave } from './utils/autosave';
 import { initVault } from './utils/vault';
 
 export default function App() {
-  const topInset = isDesktop() ? '' : 'pt-11';
+  // Web: the area below the 44px top bar. (Padding would not move the
+  // absolutely positioned panels inside, so offset the box itself.)
+  const canvasArea = isDesktop() ? 'inset-0' : 'inset-x-0 bottom-0 top-11';
   const theme = useUIStore((s) => s.theme);
 
   // Keep the effective theme synced with the OS while preference is 'system'.
@@ -36,7 +38,7 @@ export default function App() {
     <div className="w-screen h-screen overflow-hidden relative bg-white dark:bg-[#17171b]">
       <TopBar />
       <DraftRestorePrompt />
-      <div className={`absolute inset-0 ${topInset}`}>
+      <div className={`absolute ${canvasArea}`}>
         <Canvas />
         <LeftSidebar />
         <Toolbar />

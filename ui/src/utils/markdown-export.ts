@@ -10,14 +10,14 @@
  * [[links]] are kept verbatim, so the result opens cleanly in Obsidian & co.
  */
 import type { Element, MindmapElement, MindmapNode } from '../types/element';
+import { getMindmapSiblings } from '../canvas/mindmap-ops';
 
 const ROW_HEIGHT = 40;
 
 function mindmapToMarkdown(el: MindmapElement): string {
   const lines = [`## ${el.rootNode.text?.trim() || '未命名主题'}`, ''];
   const walk = (node: MindmapNode, depth: number) => {
-    const children = [...node.children, ...(node.leftChildren ?? []), ...(node.rightChildren ?? [])];
-    for (const child of children) {
+    for (const child of getMindmapSiblings(node)) {
       lines.push(`${'  '.repeat(depth)}- ${child.text?.trim() ?? ''}`);
       walk(child, depth + 1);
     }

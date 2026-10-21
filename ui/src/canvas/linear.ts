@@ -208,12 +208,6 @@ export function getConnectionPointFromBinding(
   return getConnectionAnchorFromBinding(scene, binding)?.point ?? null;
 }
 
-export function getConnectionPointFromFocus(
-  element: Element,
-  focus: number,
-): [number, number] {
-  return getConnectionAnchorFromFocus(element, focus).point;
-}
 
 function findBestAnchorMatchInElement(
   element: Element,
@@ -378,25 +372,6 @@ export function findBindableElementWithStickyPreference(
   return bestAcquire;
 }
 
-export function findNearestBindableElement(
-  scene: SceneLookup,
-  px: number,
-  py: number,
-  threshold: number,
-  fromPoint?: [number, number],
-): { element: Element; point: [number, number]; focus: number } | null {
-  const match = findBindableElementWithStickyPreference(scene, px, py, {
-    acquireThreshold: threshold,
-    releaseThreshold: threshold,
-    fromPoint,
-  });
-  if (!match) return null;
-  return {
-    element: match.element,
-    point: match.point,
-    focus: match.focus,
-  };
-}
 
 export function getLinearAbsolutePoints(
   element: LinearElement,

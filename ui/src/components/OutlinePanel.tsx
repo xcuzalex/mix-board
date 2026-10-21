@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useDocumentStore } from '../store/document';
-import { useUIStore } from '../store/ui';
+import { centerViewOn, useUIStore } from '../store/ui';
 import {
   updateMindmapNodeText,
   addMindmapSibling,
@@ -69,8 +69,6 @@ export function OutlineView() {
   const selectedIds = useUIStore((s) => s.selectedIds);
   const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
   const setSelectedMindmapNode = useUIStore((s) => s.setSelectedMindmapNode);
-  const zoom = useUIStore((s) => s.zoom);
-  const setViewport = useUIStore((s) => s.setViewport);
   const elements = useDocumentStore((s) => s.elements);
   const updateElement = useDocumentStore((s) => s.updateElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
@@ -84,13 +82,7 @@ export function OutlineView() {
   const focusElement = (el: Element) => {
     setSelectedIds([el.id]);
     setSelectedMindmapNode(el.type === 'mindmap' ? { elementId: el.id, nodeId: (el as MindmapElement).rootNode.id } : null);
-    const canvas = document.querySelector('canvas');
-    const rect = canvas?.getBoundingClientRect();
-    const w = rect?.width ?? window.innerWidth;
-    const h = rect?.height ?? window.innerHeight;
-    const cx = el.x + el.width / 2;
-    const cy = el.y + el.height / 2;
-    setViewport(w / 2 - cx * zoom, h / 2 - cy * zoom);
+    centerViewOn(el.x + el.width / 2, el.y + el.height / 2);
   };
 
   const getMindmap = (elementId: string) =>
@@ -195,6 +187,8 @@ export function OutlineView() {
                   onFocus={() => {
                     if (pendingFocusKey === row.key) setPendingFocusKey(null);
                     selectRow(row);
+                    // One undo step per row edit: recorded on the first keystroke.
+                    pushHistory();
                   }}
                   onChange={(e) => editText(row, e.target.value)}
                   onKeyDown={(e) => onRowKeyDown(row, e)}

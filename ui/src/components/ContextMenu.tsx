@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 
 export interface ContextMenuState {
   show: boolean;
@@ -65,11 +65,22 @@ export function ContextMenu({
     };
   }, [state.show, onClose]);
 
+  // Keep the menu on screen when opened near the right or bottom edge
+  // (measured before paint, so it never flashes off-screen).
+  useLayoutEffect(() => {
+    const menu = ref.current;
+    if (!state.show || !menu) return;
+    const margin = 8;
+    menu.style.left = `${Math.max(margin, Math.min(state.x, window.innerWidth - menu.offsetWidth - margin))}px`;
+    menu.style.top = `${Math.max(margin, Math.min(state.y, window.innerHeight - menu.offsetHeight - margin))}px`;
+  }, [state.show, state.x, state.y]);
+
   if (!state.show) return null;
 
   return (
     <div
       ref={ref}
+      role="menu"
       className="fixed bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-xl rounded-xl shadow-[0_1px_2px_rgba(0,0,0,0.08),0_12px_36px_rgba(0,0,0,0.16)] border border-black/[0.06] dark:border-white/10 py-1.5 z-50 min-w-[184px]"
       style={{ left: state.x, top: state.y }}
     >

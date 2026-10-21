@@ -5,17 +5,16 @@
  * text/sticky card (with Markdown markers stripped). `[[title]]` anywhere in a
  * note links to the note with that title; the backlink index is the reverse.
  */
-import type { Element, MindmapElement, MindmapNode } from '../types/element';
+import type { Element, MindmapElement } from '../types/element';
+import { visitMindmapNodes } from '../canvas/mindmap-ops';
 
 const LINK_RE = /\[\[([^\]]+)\]\]/g;
 
 function collectMindmapText(el: MindmapElement): string {
   const parts: string[] = [];
-  const walk = (n: MindmapNode) => {
+  visitMindmapNodes(el.rootNode, (n) => {
     if (n.text) parts.push(n.text);
-    for (const c of [...n.children, ...(n.leftChildren ?? []), ...(n.rightChildren ?? [])]) walk(c);
-  };
-  walk(el.rootNode);
+  });
   return parts.join('\n');
 }
 

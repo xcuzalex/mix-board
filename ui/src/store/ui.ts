@@ -27,9 +27,6 @@ interface UIStore {
   setSelectedIds: (ids: string[]) => void;
   selectedMindmapNode: { elementId: string; nodeId: string } | null;
   setSelectedMindmapNode: (node: { elementId: string; nodeId: string } | null) => void;
-  addToSelection: (id: string) => void;
-  removeFromSelection: (id: string) => void;
-  clearSelection: () => void;
 
   // Viewport
   viewportX: number;
@@ -39,27 +36,16 @@ interface UIStore {
   setViewport: (x: number, y: number) => void;
   setZoom: (zoom: number) => void;
   setTargetZoom: (zoom: number) => void;
-  panBy: (dx: number, dy: number) => void;
 
   // UI panels
-  showPropertyPanel: boolean;
   showGrid: boolean;
   /** Dot-grid canvas backdrop (remembered per device). */
   showDots: boolean;
   showOutline: boolean;
-  setShowPropertyPanel: (show: boolean) => void;
   toggleGrid: () => void;
   toggleDots: () => void;
   toggleOutline: () => void;
-  setShowOutline: (show: boolean) => void;
 
-  // Interaction state
-  isDrawing: boolean;
-  isDragging: boolean;
-  isPanning: boolean;
-  setIsDrawing: (v: boolean) => void;
-  setIsDragging: (v: boolean) => void;
-  setIsPanning: (v: boolean) => void;
 
   // Cursor
   cursorStyle: string;
@@ -109,17 +95,6 @@ export const useUIStore = create<UIStore>()((set, get) => ({
   setSelectedIds: (ids) => set({ selectedIds: ids }),
   selectedMindmapNode: null,
   setSelectedMindmapNode: (node) => set({ selectedMindmapNode: node }),
-  addToSelection: (id) =>
-    set((state) => ({
-      selectedIds: state.selectedIds.includes(id)
-        ? state.selectedIds
-        : [...state.selectedIds, id],
-    })),
-  removeFromSelection: (id) =>
-    set((state) => ({
-      selectedIds: state.selectedIds.filter((sid) => sid !== id),
-    })),
-  clearSelection: () => set({ selectedIds: [] }),
 
   viewportX: 0,
   viewportY: 0,
@@ -131,31 +106,17 @@ export const useUIStore = create<UIStore>()((set, get) => ({
     set({ zoom: clamped, targetZoom: clamped });
   },
   setTargetZoom: (zoom) => set({ targetZoom: Math.max(0.1, Math.min(5, zoom)) }),
-  panBy: (dx, dy) =>
-    set((state) => ({
-      viewportX: state.viewportX + dx,
-      viewportY: state.viewportY + dy,
-    })),
 
-  showPropertyPanel: false,
   showGrid: false,
   showDots: loadStoredDots(),
   showOutline: false,
-  setShowPropertyPanel: (show) => set({ showPropertyPanel: show }),
   toggleGrid: () => set((state) => ({ showGrid: !state.showGrid })),
   toggleDots: () => set((state) => {
     storeDots(!state.showDots);
     return { showDots: !state.showDots };
   }),
   toggleOutline: () => set((state) => ({ showOutline: !state.showOutline })),
-  setShowOutline: (show) => set({ showOutline: show }),
 
-  isDrawing: false,
-  isDragging: false,
-  isPanning: false,
-  setIsDrawing: (v) => set({ isDrawing: v }),
-  setIsDragging: (v) => set({ isDragging: v }),
-  setIsPanning: (v) => set({ isPanning: v }),
 
   cursorStyle: 'default',
   setCursorStyle: (style) => set({ cursorStyle: style }),
@@ -173,3 +134,37 @@ export const useUIStore = create<UIStore>()((set, get) => ({
     get().setTheme(next);
   },
 }));
+
+// --- Viewport helpers (read the store at call time; no React subscription) ---
+
+function canvasViewSize() {
+  const rect = document.querySelector('canvas')?.getBoundingClientRect();
+  return { width: rect?.width ?? window.innerWidth, height: rect?.height ?? window.innerHeight };
+}
+
+/** Canvas-space point at the centre of the visible canvas. */
+export function getViewportCenter() {
+  const { viewportX, viewportY, zoom } = useUIStore.getState();
+  const { width, height } = canvasViewSize();
+  return { x: (width / 2 - viewportX) / zoom, y: (height / 2 - viewportY) / zoom };
+}
+
+/** Zooms to `nextZoom`, keeping the centre of the view where it is. */
+export function zoomAroundCenter(nextZoom: number) {
+  const { viewportX, viewportY, zoom, setViewport, setZoom } = useUIStore.getState();
+  const z = Math.max(0.1, Math.min(5, nextZoom));
+  const { width, height } = canvasViewSize();
+  const cx = width / 2;
+  const cy = height / 2;
+  setViewport(cx - ((cx - viewportX) * z) / zoom, cy - ((cy - viewportY) * z) / zoom);
+  setZoom(z);
+}
+
+/** Pans so canvas point (x, y) is centred, optionally at a new zoom. */
+export function centerViewOn(x: number, y: number, nextZoom?: number) {
+  const { zoom, setViewport, setZoom } = useUIStore.getState();
+  const z = nextZoom === undefined ? zoom : Math.max(0.1, Math.min(5, nextZoom));
+  const { width, height } = canvasViewSize();
+  if (z !== zoom) setZoom(z);
+  setViewport(width / 2 - x * z, height / 2 - y * z);
+}

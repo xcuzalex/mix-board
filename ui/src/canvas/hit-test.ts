@@ -68,7 +68,6 @@ function pathBounds(points: [number, number][]) {
 
 export class SpatialIndex {
   private cells = new Map<string, string[]>();
-  private idSet = new Set<string>();
 
   constructor(elements: Element[], sceneIndex?: SceneIndex) {
     for (const el of elements) {
@@ -99,7 +98,6 @@ export class SpatialIndex {
           }
         }
       }
-      this.idSet.add(el.id);
     }
   }
 
@@ -119,9 +117,6 @@ export class SpatialIndex {
     return result;
   }
 
-  hasElement(id: string): boolean {
-    return this.idSet.has(id);
-  }
 }
 
 function resolveSceneIndex(elementsOrScene: Element[] | SceneIndex): SceneIndex {

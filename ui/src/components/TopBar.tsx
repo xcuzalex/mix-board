@@ -35,43 +35,120 @@ function formatSavedAt(timestamp: number | null) {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Focus is in a text field, where Cmd+Z / Delete belong to the field. */
+function isEditingText() {
+  const el = document.activeElement as HTMLElement | null;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+}
+
+async function openDocumentFile() {
+  flushPendingCanvasInteractionState();
+  const platform = await getPlatform();
+  if (platform.vault) {
+    // Desktop: pick a path, then open it like a vault board (saving the current one first).
+    const result = await platform.openFile();
+    if (result) await openBoard(result.path);
+    return;
+  }
+  const result = await platform.openFile();
+  if (!result) return;
+  // Save the current board first; replacing it keeps its draft recoverable.
+  await settleDocument();
+  const doc = useDocumentStore.getState();
+  if (doc.loadDocument(result.content)) {
+    doc.setFilePath(result.path);
+  } else {
+    useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 画板');
+  }
+}
+
+/** Runs a native-menu action against the current state (read at call time). */
+async function runMenuAction(actionId: string) {
+  const doc = useDocumentStore.getState();
+  const ui = useUIStore.getState();
+  const { selectedIds } = ui;
+  const boardHidden = useVaultStore.getState().libraryOpen;
+  const editsBoard = /^(edit|arrange|insert)\./.test(actionId);
+
+  if (editsBoard && isEditingText()) {
+    // Let the focused field handle its own undo/redo.
+    if (actionId === 'edit.undo') document.execCommand('undo');
+    if (actionId === 'edit.redo') document.execCommand('redo');
+    return;
+  }
+  // The library page covers the board: don't change what can't be seen.
+  if (editsBoard && boardHidden) return;
+
+  const edit = (apply: () => void) => {
+    if (selectedIds.length === 0) return;
+    flushPendingCanvasInteractionState();
+    doc.pushHistory();
+    apply();
+  };
+
+  switch (actionId) {
+    case 'file.new': return createBoard();
+    case 'file.open': return openDocumentFile();
+    case 'file.open_vault': return pickVaultFolder();
+    case 'file.library': return openLibrary();
+    case 'file.save': return void (await saveCurrentDocument());
+    case 'file.export_png': return void (await exportCurrentBoardAsImage());
+    case 'file.export_md': return void (await exportCurrentBoardAsMarkdown());
+    case 'edit.undo':
+      flushPendingCanvasInteractionState();
+      return doc.undo();
+    case 'edit.redo':
+      flushPendingCanvasInteractionState();
+      return doc.redo();
+    case 'edit.duplicate':
+      return edit(() => ui.setSelectedIds(doc.duplicateElements(selectedIds)));
+    case 'edit.delete':
+      return edit(() => {
+        doc.removeElements(selectedIds);
+        ui.setSelectedIds([]);
+      });
+    case 'insert.text': return ui.setActiveTool('text');
+    case 'insert.note': return ui.setActiveTool('sticky_note');
+    case 'insert.arrow': return ui.setActiveTool('arrow');
+    case 'insert.frame': return ui.setActiveTool('frame');
+    case 'insert.section': return ui.setActiveTool('section');
+    case 'insert.mindmap': return ui.setActiveTool('mindmap');
+    case 'insert.image': return ui.setActiveTool('image');
+    case 'arrange.forward': return edit(() => doc.bringForward(selectedIds));
+    case 'arrange.backward': return edit(() => doc.sendBackward(selectedIds));
+    case 'arrange.front': return edit(() => doc.bringToFront(selectedIds));
+    case 'arrange.back': return edit(() => doc.sendToBack(selectedIds));
+    case 'arrange.group':
+      if (selectedIds.length < 2) return;
+      return edit(() => doc.groupElements(selectedIds));
+    case 'arrange.ungroup': {
+      const byId = new Map(doc.elements.map((el) => [el.id, el]));
+      if (!selectedIds.some((id) => (byId.get(id)?.groupIds.length ?? 0) > 0)) return;
+      return edit(() => doc.ungroupElements(selectedIds));
+    }
+    case 'view.toggle_grid': return ui.toggleGrid();
+    case 'view.toggle_dots': return ui.toggleDots();
+    case 'view.reset':
+      ui.setZoom(1);
+      ui.setViewport(0, 0);
+      return;
+    default:
+  }
+}
+
 export function TopBar() {
   const isDesktopApp = isDesktop();
-  const desktopWindow = isDesktopApp ? getCurrentWindow() : null;
   const filePath = useDocumentStore((s) => s.filePath);
   const isDirty = useDocumentStore((s) => s.isDirty);
   const autosaveStatus = useAutosaveStore((s) => s.status);
   const lastSavedAt = useAutosaveStore((s) => s.lastSavedAt);
   const autosaveError = useAutosaveStore((s) => s.error);
-  const loadDocument = useDocumentStore((s) => s.loadDocument);
-  const setFilePath = useDocumentStore((s) => s.setFilePath);
-  const pushHistory = useDocumentStore((s) => s.pushHistory);
-  const removeElements = useDocumentStore((s) => s.removeElements);
-  const duplicateElements = useDocumentStore((s) => s.duplicateElements);
-  const undo = useDocumentStore((s) => s.undo);
-  const redo = useDocumentStore((s) => s.redo);
-  const bringToFront = useDocumentStore((s) => s.bringToFront);
-  const sendToBack = useDocumentStore((s) => s.sendToBack);
-  const bringForward = useDocumentStore((s) => s.bringForward);
-  const sendBackward = useDocumentStore((s) => s.sendBackward);
-  const groupElements = useDocumentStore((s) => s.groupElements);
-  const ungroupElements = useDocumentStore((s) => s.ungroupElements);
-
-  const selectedIds = useUIStore((s) => s.selectedIds);
-  const canUngroup = useDocumentStore((s) =>
-    selectedIds.some((selectedId) => {
-      const element = s.elements.find((candidate) => candidate.id === selectedId);
-      return element !== undefined && element.groupIds.length > 0;
-    }),
-  );
-  const setSelectedIds = useUIStore((s) => s.setSelectedIds);
-  const setActiveTool = useUIStore((s) => s.setActiveTool);
-  const toggleGrid = useUIStore((s) => s.toggleGrid);
-  const setViewport = useUIStore((s) => s.setViewport);
-  const setZoom = useUIStore((s) => s.setZoom);
 
   const fileName = getDocumentDisplayName(filePath);
-  const canGroup = selectedIds.length > 1;
   // Clean documents show no status, like macOS "— Edited" titles.
   const statusLabel = autosaveStatus === 'idle' && isDirty ? AUTOSAVE_LABELS.dirty : AUTOSAVE_LABELS[autosaveStatus];
   const statusTooltip = autosaveStatus === 'error'
@@ -79,186 +156,30 @@ export function TopBar() {
     : lastSavedAt !== null ? `上次保存 ${formatSavedAt(lastSavedAt)}` : undefined;
   const windowTitle = `${fileName}${statusLabel ? ` — ${statusLabel}` : ''} - MixNote`;
 
-  const handleOpen = async () => {
-    flushPendingCanvasInteractionState();
-    const platform = await getPlatform();
-    if (platform.vault) {
-      // Desktop: pick a path, then open it like a vault board (saving the current one first).
-      const result = await platform.openFile();
-      if (result) await openBoard(result.path);
-      return;
-    }
-    const result = await platform.openFile();
-    if (!result) return;
-    // Save the current board first; replacing it keeps its draft recoverable.
-    await settleDocument();
-    if (loadDocument(result.content)) {
-      setFilePath(result.path);
-    } else {
-      useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 画板');
-    }
-  };
-
+  // Subscribe once; actions read the stores when they run, so the listener
+  // never holds stale state and can't be registered twice.
   useEffect(() => {
     if (!isDesktopApp) return undefined;
-
+    let disposed = false;
     let unlisten: UnlistenFn | null = null;
-
-    const runMenuAction = async (actionId: string) => {
-      switch (actionId) {
-        case 'file.new':
-          await createBoard();
-          return;
-        case 'file.open':
-          await handleOpen();
-          return;
-        case 'file.open_vault':
-          await pickVaultFolder();
-          return;
-        case 'file.library':
-          openLibrary();
-          return;
-        case 'file.save':
-          await saveCurrentDocument();
-          return;
-        case 'file.export_png':
-          await exportCurrentBoardAsImage();
-          return;
-        case 'file.export_md':
-          await exportCurrentBoardAsMarkdown();
-          return;
-        case 'edit.undo':
-          flushPendingCanvasInteractionState();
-          undo();
-          return;
-        case 'edit.redo':
-          flushPendingCanvasInteractionState();
-          redo();
-          return;
-        case 'edit.duplicate':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          setSelectedIds(duplicateElements(selectedIds));
-          return;
-        case 'edit.delete':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          removeElements(selectedIds);
-          setSelectedIds([]);
-          return;
-        case 'insert.text':
-          setActiveTool('text');
-          return;
-        case 'insert.note':
-          setActiveTool('sticky_note');
-          return;
-        case 'insert.arrow':
-          setActiveTool('arrow');
-          return;
-        case 'insert.frame':
-          setActiveTool('frame');
-          return;
-        case 'insert.section':
-          setActiveTool('section');
-          return;
-        case 'insert.mindmap':
-          setActiveTool('mindmap');
-          return;
-        case 'insert.image':
-          setActiveTool('image');
-          return;
-        case 'arrange.forward':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          bringForward(selectedIds);
-          return;
-        case 'arrange.backward':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          sendBackward(selectedIds);
-          return;
-        case 'arrange.front':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          bringToFront(selectedIds);
-          return;
-        case 'arrange.back':
-          if (selectedIds.length === 0) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          sendToBack(selectedIds);
-          return;
-        case 'arrange.group':
-          if (!canGroup) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          groupElements(selectedIds);
-          return;
-        case 'arrange.ungroup':
-          if (!canUngroup) return;
-          flushPendingCanvasInteractionState();
-          pushHistory();
-          ungroupElements(selectedIds);
-          return;
-        case 'view.toggle_grid':
-          toggleGrid();
-          return;
-        case 'view.toggle_dots':
-          useUIStore.getState().toggleDots();
-          return;
-        case 'view.reset':
-          setZoom(1);
-          setViewport(0, 0);
-          return;
-        case 'help.about':
-          return;
-        default:
-      }
-    };
-
     void listen<string>(NATIVE_MENU_EVENT, (event) => {
-      void runMenuAction(event.payload);
+      runMenuAction(event.payload).catch((err) => {
+        useVaultStore.getState().setNotice(`操作失败：${errorMessage(err)}`);
+      });
     }).then((fn) => {
-      unlisten = fn;
+      if (disposed) fn();
+      else unlisten = fn;
     });
-
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
+      disposed = true;
+      unlisten?.();
     };
-  }, [
-    isDesktopApp,
-    selectedIds,
-    canGroup,
-    canUngroup,
-    pushHistory,
-    duplicateElements,
-    removeElements,
-    undo,
-    redo,
-    setSelectedIds,
-    setActiveTool,
-    bringForward,
-    sendBackward,
-    bringToFront,
-    sendToBack,
-    groupElements,
-    ungroupElements,
-    toggleGrid,
-    setZoom,
-    setViewport,
-  ]);
+  }, [isDesktopApp]);
 
   useEffect(() => {
-    if (!desktopWindow) return;
-    void desktopWindow.setTitle(windowTitle);
-  }, [desktopWindow, windowTitle]);
+    if (!isDesktopApp) return;
+    void getCurrentWindow().setTitle(windowTitle);
+  }, [isDesktopApp, windowTitle]);
 
   if (isDesktopApp) {
     // The native title bar carries the status; only surface failures in-canvas.

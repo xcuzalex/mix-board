@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { PRESET_COLORS, STICKY_NOTE_COLORS } from '../utils/color';
@@ -79,6 +80,8 @@ const HIGHLIGHTER_COLORS = [
 ];
 
 const SOLID_COLORS = PRESET_COLORS.filter((c) => c !== 'transparent');
+/** Style keys every element type has; edits to these apply to a mixed selection. */
+const SHARED_STYLE_KEYS = new Set(['strokeColor', 'strokeWidth', 'strokeStyle', 'opacity', 'backgroundColor']);
 
 interface Group {
   id: string;
@@ -87,25 +90,11 @@ interface Group {
   content: ReactNode;
 }
 
-function mapMindmapNodes(
-  node: MindmapNode,
-  transform: (node: MindmapNode) => MindmapNode,
-): MindmapNode {
-  const nextNode = transform(node);
-  return {
-    ...nextNode,
-    children: nextNode.children.map((child) => mapMindmapNodes(child, transform)),
-    leftChildren: (nextNode.leftChildren || []).map((child) => mapMindmapNodes(child, transform)),
-    rightChildren: (nextNode.rightChildren || []).map((child) => mapMindmapNodes(child, transform)),
-  };
-}
-
 function getFirstBranchNode(root: MindmapNode): MindmapNode | null {
   return root.children[0] ?? root.rightChildren?.[0] ?? root.leftChildren?.[0] ?? null;
 }
 
 export function PropertyPanel() {
-  const elements = useDocumentStore((s) => s.elements);
   const applyTransaction = useDocumentStore((s) => s.applyTransaction);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
   const alignElements = useDocumentStore((s) => s.alignElements);
@@ -120,6 +109,9 @@ export function PropertyPanel() {
   const setZoom = useUIStore((s) => s.setZoom);
   const setViewport = useUIStore((s) => s.setViewport);
   const historyGestureRef = useRef(false);
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // Only re-render when the selected elements themselves change.
+  const selectedElements = useDocumentStore(useShallow((s) => s.elements.filter((el) => selectedIdSet.has(el.id))));
 
   const [openId, setOpenId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -186,7 +178,7 @@ export function PropertyPanel() {
     const desired = buttonRect.top + buttonRect.height / 2 - height / 2;
     const clamped = Math.max(margin, Math.min(window.innerHeight - margin - height, desired));
     setPopoverTop(clamped - rootRect.top);
-  });
+  }, [openId, selectionKey]);
 
   const beginHistoryGesture = () => {
     if (historyGestureRef.current) return;
@@ -198,24 +190,33 @@ export function PropertyPanel() {
     historyGestureRef.current = false;
   };
 
-  const update = (updates: Partial<Element>, options?: { withHistory?: boolean }) => {
+  /**
+   * Applies `updates` to the selection. Style keys every element has go to all
+   * of it; type-specific keys only to elements of the same type as the one the
+   * controls were built from (so a mindmap's tree never lands on a rectangle).
+   * `ids` narrows it further, e.g. to the one mindmap being edited.
+   */
+  const update = (updates: Partial<Element>, options?: { withHistory?: boolean; ids?: string[] }) => {
+    const first = selectedElements[0];
+    if (!first) return;
     if (options?.withHistory ?? true) {
       pushHistory();
     }
-    const selectedIdSet = new Set(selectedIds);
+    const targetIds = new Set(options?.ids ?? selectedIds);
+    const sharedOnly = Object.keys(updates).every((key) => SHARED_STYLE_KEYS.has(key));
     const updatedAt = Date.now();
     applyTransaction((draft) => {
       for (const element of draft.elements) {
-        if (selectedIdSet.has(element.id)) {
-          Object.assign(element, updates, { updatedAt });
-        }
+        if (!targetIds.has(element.id)) continue;
+        if (!sharedOnly && element.type !== first.type) continue;
+        Object.assign(element, updates, { updatedAt });
       }
     });
   };
 
-  const updateInHistoryGesture = (updates: Partial<Element>) => {
+  const updateInHistoryGesture = (updates: Partial<Element>, ids?: string[]) => {
     beginHistoryGesture();
-    update(updates, { withHistory: false });
+    update(updates, { withHistory: false, ids });
   };
 
   const slider = (props: { value: number; min: number; max: number; step?: number; unit: string; onChange: (v: number) => void }) => (
@@ -259,7 +260,6 @@ export function PropertyPanel() {
       return [];
     }
 
-    const selectedElements = elements.filter((el) => selectedIds.includes(el.id));
     if (selectedElements.length === 0) return [];
     const first = selectedElements[0];
     const anyFirst = first as any;
@@ -279,7 +279,9 @@ export function PropertyPanel() {
     }
 
     if (isHighlighter) {
-      const current = (anyFirst.highlightColor as string | undefined)?.replace('0.4)', '1)').replace('rgba', 'rgb') ?? '#FFEB3B';
+      const normalize = (color: string | undefined) => (color ?? '').replace(/\s/g, '');
+      const swatch = HIGHLIGHTER_COLORS.find((c) => normalize(c.label) === normalize(anyFirst.highlightColor));
+      const current = swatch?.display ?? '#FFEB3B';
       result.push({
         id: 'highlight',
         label: '荧光',
@@ -288,13 +290,14 @@ export function PropertyPanel() {
           <>
             <Field label="颜色">
               <ColorGrid
-                colors={['#FFEB3B', '#4CAF50', '#2196F3', '#E91E63', '#FF9800', '#9C27B0', '#00BCD4', '#F44336']}
+                colors={HIGHLIGHTER_COLORS.map((c) => c.display)}
                 selected={current}
                 onSelect={(c) => {
+                  const preset = HIGHLIGHTER_COLORS.find((h) => h.display.toLowerCase() === c.toLowerCase());
                   const r = parseInt(c.slice(1, 3), 16);
                   const g = parseInt(c.slice(3, 5), 16);
                   const b = parseInt(c.slice(5, 7), 16);
-                  update({ highlightColor: `rgba(${r}, ${g}, ${b}, 0.4)` } as any);
+                  update({ highlightColor: preset?.label ?? `rgba(${r},${g},${b},0.4)` } as any);
                 }}
               />
             </Field>
@@ -450,13 +453,13 @@ export function PropertyPanel() {
           <Field label="透明度">
             {slider({ value: first.opacity, min: 0, max: 100, unit: '%', onChange: (v) => updateInHistoryGesture({ opacity: v } as any) })}
           </Field>
-          {!mindmap && (
+          {!mindmap && selectedElements.length === 1 && (
             <Field label="位置尺寸">
               <div className="grid grid-cols-2 gap-1.5">
-                <LabeledInput label="X" value={Math.round(first.x)} onChange={(v) => update({ x: v } as any)} />
-                <LabeledInput label="Y" value={Math.round(first.y)} onChange={(v) => update({ y: v } as any)} />
-                <LabeledInput label="W" value={Math.round(first.width)} onChange={(v) => update({ width: v } as any)} />
-                <LabeledInput label="H" value={Math.round(first.height)} onChange={(v) => update({ height: v } as any)} />
+                <LabeledInput label="X" value={Math.round(first.x)} onCommit={(v) => update({ x: v } as any)} />
+                <LabeledInput label="Y" value={Math.round(first.y)} onCommit={(v) => update({ y: v } as any)} />
+                <LabeledInput label="W" value={Math.round(first.width)} min={1} onCommit={(v) => update({ width: v } as any)} />
+                <LabeledInput label="H" value={Math.round(first.height)} min={1} onCommit={(v) => update({ height: v } as any)} />
               </div>
             </Field>
           )}
@@ -469,6 +472,8 @@ export function PropertyPanel() {
 
   function buildMindmapGroups(mindmap: MindmapElement): Group[] {
     const branchSample = getFirstBranchNode(mindmap.rootNode);
+    // Mindmap controls edit only this mindmap, never other selected elements.
+    const updateMindmap = (updates: Partial<MindmapElement>) => update(updates as Partial<Element>, { ids: [mindmap.id] });
     const selNodeId = selectedMindmapNode?.elementId === mindmap.id ? selectedMindmapNode.nodeId : null;
     const selNode = selNodeId ? findMindmapNode(mindmap.rootNode, selNodeId) : null;
     const canToggle = !!selNode && selNode.id !== mindmap.rootNode.id && getMindmapSiblings(selNode).length > 0;
@@ -488,13 +493,11 @@ export function PropertyPanel() {
     };
 
     const updateNodePalette = (target: 'root' | 'branches', key: 'backgroundColor' | 'textColor', value: string) => {
-      update({
-        rootNode: mapMindmapNodes(mindmap.rootNode, (node) => {
-          const isRoot = node.nodeType === 'root';
-          if (target === 'root') return isRoot ? { ...node, [key]: value } : node;
-          return isRoot ? node : { ...node, [key]: value };
-        }),
-      } as any);
+      updateMindmap({
+        rootNode: mapMindmapTree(mindmap.rootNode, (node) => (
+          (node.nodeType === 'root') === (target === 'root') ? { [key]: value } : null
+        )),
+      });
     };
 
     return [
@@ -504,20 +507,20 @@ export function PropertyPanel() {
         icon: <ExpandIcon />,
         content: (
           <div className="grid grid-cols-2 gap-1">
-            <TextBtn onClick={() => update({ rootNode: mapMindmapTree(mindmap.rootNode, () => ({ collapsed: false })) } as any)}>展开全部</TextBtn>
+            <TextBtn onClick={() => updateMindmap({ rootNode: mapMindmapTree(mindmap.rootNode, () => ({ collapsed: false })) })}>展开全部</TextBtn>
             <TextBtn
-              onClick={() => update({
+              onClick={() => updateMindmap({
                 rootNode: mapMindmapTree(mindmap.rootNode, (n, depth) => ({ collapsed: depth >= 1 && getMindmapSiblings(n).length > 0 })),
-              } as any)}
+              })}
             >
               只看一级
             </TextBtn>
             <TextBtn
               disabled={!canToggle}
               title={canToggle ? undefined : '先在脑图中选中一个有子主题的节点'}
-              onClick={() => selNodeId && update({
+              onClick={() => selNodeId && updateMindmap({
                 rootNode: mapMindmapTree(mindmap.rootNode, (n) => (n.id === selNodeId ? { collapsed: !n.collapsed } : null)),
-              } as any)}
+              })}
             >
               {selNode?.collapsed ? '展开所选' : '收起所选'}
             </TextBtn>
@@ -532,10 +535,10 @@ export function PropertyPanel() {
         content: (
           <>
             <Field label="方向">
-              <Segmented options={MINDMAP_LAYOUT_OPTIONS} value={mindmap.layout} onChange={(v) => update({ layout: v } as any)} />
+              <Segmented options={MINDMAP_LAYOUT_OPTIONS} value={mindmap.layout} onChange={(v) => updateMindmap({ layout: v })} />
             </Field>
             <Field label="分支形态">
-              <Segmented options={BRANCH_STYLE_OPTIONS} value={mindmap.branchStyle} onChange={(v) => update({ branchStyle: v } as any)} />
+              <Segmented options={BRANCH_STYLE_OPTIONS} value={mindmap.branchStyle} onChange={(v) => updateMindmap({ branchStyle: v })} />
             </Field>
           </>
         ),
@@ -549,7 +552,7 @@ export function PropertyPanel() {
             <ColorGrid
               colors={SOLID_COLORS}
               selected={mindmap.lineStyle.color}
-              onSelect={(color) => update({ lineStyle: { ...mindmap.lineStyle, color } } as any)}
+              onSelect={(color) => updateMindmap({ lineStyle: { ...mindmap.lineStyle, color } })}
             />
             <Field label="粗细">
               {slider({
@@ -558,14 +561,14 @@ export function PropertyPanel() {
                 max: 10,
                 step: 0.5,
                 unit: 'px',
-                onChange: (v) => updateInHistoryGesture({ lineStyle: { ...mindmap.lineStyle, width: v } } as any),
+                onChange: (v) => updateInHistoryGesture({ lineStyle: { ...mindmap.lineStyle, width: v } } as Partial<Element>, [mindmap.id]),
               })}
             </Field>
             <Field label="样式">
               <Segmented
                 options={STROKE_STYLE_OPTIONS}
                 value={mindmap.lineStyle.style}
-                onChange={(style) => update({ lineStyle: { ...mindmap.lineStyle, style } } as any)}
+                onChange={(style) => updateMindmap({ lineStyle: { ...mindmap.lineStyle, style } })}
               />
             </Field>
           </>
@@ -592,7 +595,7 @@ export function PropertyPanel() {
   const openGroup = groups.find((g) => g.id === openId) ?? null;
 
   return (
-    <div ref={rootRef} className="absolute right-3 top-1/2 z-10 -translate-y-1/2">
+    <div ref={rootRef} data-overlay-panel className="absolute right-3 top-1/2 z-10 -translate-y-1/2">
       <div className="flex flex-col items-center gap-0.5 rounded-[18px] border border-black/[0.06] bg-white/75 p-1 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.10)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/75">
         {groups.map((group) => {
           const active = group.id === openId;
@@ -809,6 +812,9 @@ function SwatchRow<T extends string>({
               : 'ring-1 ring-black/10 hover:ring-black/25 dark:ring-white/15 dark:hover:ring-white/30'
           }`}
           style={{ backgroundColor: display }}
+          title={display}
+          aria-label={display}
+          aria-pressed={selected === value}
           onClick={() => onSelect(value)}
         />
       ))}
@@ -868,25 +874,42 @@ function ColorGrid({
   );
 }
 
+/** Number field that applies on Enter or blur (one undo step, no half-typed values). */
 function LabeledInput({
   label,
   value,
-  onChange,
+  min,
+  onCommit,
 }: {
   label: string;
   value: number;
-  onChange: (v: number) => void;
+  min?: number;
+  onCommit: (v: number) => void;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = Number(draft);
+    setDraft(null);
+    if (draft.trim() === '' || !Number.isFinite(parsed)) return;
+    const next = min !== undefined ? Math.max(min, parsed) : parsed;
+    if (next !== value) onCommit(next);
+  };
   return (
-    <div className="flex items-center gap-1 rounded-[10px] bg-black/[0.05] px-2 dark:bg-white/[0.07]">
+    <label className="flex items-center gap-1 rounded-[10px] bg-black/[0.05] px-2 dark:bg-white/[0.07]">
       <span className="w-3 text-[10px] text-slate-400 dark:text-slate-500">{label}</span>
       <input
         type="number"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={draft ?? value}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setDraft(null);
+        }}
         className="w-full bg-transparent py-1 text-xs text-slate-700 outline-none dark:text-slate-200"
       />
-    </div>
+    </label>
   );
 }
 

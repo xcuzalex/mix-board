@@ -16,5 +16,3 @@ export type ToolType =
   | 'section'
   | 'frame';
 
-export type ShapeToolType = 'rectangle' | 'ellipse' | 'diamond' | 'triangle';
-export type DrawToolType = 'freedraw' | 'highlighter';

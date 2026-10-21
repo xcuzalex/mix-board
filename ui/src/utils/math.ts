@@ -35,12 +35,6 @@ export function pointInDiamond(
   return Math.abs(px - cx) / hw + Math.abs(py - cy) / hh <= 1;
 }
 
-export function rectIntersects(
-  ax: number, ay: number, aw: number, ah: number,
-  bx: number, by: number, bw: number, bh: number,
-): boolean {
-  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
-}
 
 export function snapToGrid(value: number, gridSize: number): number {
   return Math.round(value / gridSize) * gridSize;

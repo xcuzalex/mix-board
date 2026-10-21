@@ -1,4 +1,4 @@
-import { useUIStore } from '../store/ui';
+import { useUIStore, zoomAroundCenter } from '../store/ui';
 
 const THEME_LABEL: Record<string, string> = {
   light: '浅色（点击切换到深色）',
@@ -35,26 +35,22 @@ function ThemeIcon({ theme }: { theme: string }) {
 
 export function ZoomControl() {
   const zoom = useUIStore((s) => s.zoom);
-  const setZoom = useUIStore((s) => s.setZoom);
-  const setViewport = useUIStore((s) => s.setViewport);
   const theme = useUIStore((s) => s.theme);
   const cycleTheme = useUIStore((s) => s.cycleTheme);
   const showDots = useUIStore((s) => s.showDots);
   const toggleDots = useUIStore((s) => s.toggleDots);
 
-  const zoomIn = () => setZoom(Math.min(5, zoom * 1.2));
-  const zoomOut = () => setZoom(Math.max(0.1, zoom / 1.2));
-  const resetZoom = () => {
-    setZoom(1);
-    setViewport(0, 0);
-  };
+  // Zoom around the centre of the view, so the content under it stays put.
+  const zoomIn = () => zoomAroundCenter(zoom * 1.2);
+  const zoomOut = () => zoomAroundCenter(zoom / 1.2);
+  const resetZoom = () => zoomAroundCenter(1);
 
   const btn = 'flex items-center justify-center rounded-lg text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-300 dark:hover:bg-white/10';
 
   return (
     <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-white/75 dark:bg-[#1c1c1e]/75 backdrop-blur-xl rounded-2xl shadow-[0_1px_2px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.10)] border border-black/[0.06] dark:border-white/10 px-2 py-1 z-10">
       <button className={`w-7 h-7 text-sm ${btn}`} onClick={zoomOut} title="缩小">−</button>
-      <button className={`px-2 h-7 text-xs min-w-[48px] ${btn}`} onClick={resetZoom} title="重置缩放">
+      <button className={`px-2 h-7 text-xs min-w-[48px] ${btn}`} onClick={resetZoom} title="缩放到 100%">
         {Math.round(zoom * 100)}%
       </button>
       <button className={`w-7 h-7 text-sm ${btn}`} onClick={zoomIn} title="放大">+</button>

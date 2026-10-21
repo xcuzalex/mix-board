@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createElementForTool } from '../canvas/interaction';
 import { useDocumentStore } from '../store/document';
-import { isDesktop } from '../platform';
-import { useUIStore } from '../store/ui';
+import { getViewportCenter, useUIStore } from '../store/ui';
 import type { ShapeVariant } from '../types/element';
 import type { ToolType } from '../types/tool';
 import {
@@ -46,9 +45,6 @@ export function Toolbar() {
   const activeShapeVariant = useUIStore((s) => s.activeShapeVariant);
   const setActiveShapeVariant = useUIStore((s) => s.setActiveShapeVariant);
   const setSelectedIds = useUIStore((s) => s.setSelectedIds);
-  const viewportX = useUIStore((s) => s.viewportX);
-  const viewportY = useUIStore((s) => s.viewportY);
-  const zoom = useUIStore((s) => s.zoom);
   const addElement = useDocumentStore((s) => s.addElement);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
 
@@ -196,20 +192,7 @@ export function Toolbar() {
     }
   };
 
-  const getViewportCenter = () => {
-    const canvas = document.querySelector('canvas');
-    if (canvas instanceof HTMLCanvasElement) {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: (rect.width / 2 - viewportX) / zoom,
-        y: (rect.height / 2 - viewportY) / zoom,
-      };
-    }
-    return {
-      x: (window.innerWidth / 2 - viewportX) / zoom,
-      y: (window.innerHeight / 2 - viewportY) / zoom,
-    };
-  };
+
 
   const insertItem = (item: LibraryItem) => {
     if (item.tool === 'image') {
@@ -341,7 +324,9 @@ export function Toolbar() {
 
       <div
         ref={rootRef}
-        className={`absolute left-1/2 z-20 -translate-x-1/2 ${isDesktop() ? 'top-3' : 'top-14'}`}
+        data-overlay-panel
+        // With the outline open, centre in the space to its right so it never covers the tools.
+        className={`absolute top-3 z-20 -translate-x-1/2 transition-[left] duration-200 ${showOutline ? 'left-[calc(50%+9.5rem)]' : 'left-1/2'}`}
         onMouseEnter={() => {
           hoveringRef.current = true;
           reveal();
@@ -361,6 +346,8 @@ export function Toolbar() {
         </button>
 
         <div
+          // Hidden tools must not be reachable by Tab either.
+          inert={!shown}
           className={`flex items-center gap-0.5 rounded-[18px] border border-black/[0.06] bg-white/75 p-1 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_10px_30px_rgba(0,0,0,0.10)] backdrop-blur-xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] dark:border-white/10 dark:bg-[#1c1c1e]/75 ${
             shown ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-[calc(100%+16px)] opacity-0'
           }`}
@@ -401,7 +388,8 @@ export function Toolbar() {
               label="绘图工具"
               onClick={() => {
                 if (!drawActive) setActiveTool('rectangle');
-                setShowDrawPanel((v) => !v);
+                // Hover already opens it; a click must not toggle it shut again.
+                setShowDrawPanel(true);
               }}
             >
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">

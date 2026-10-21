@@ -20,7 +20,7 @@ export function DraftRestorePrompt() {
   const top = isDesktop() ? 'top-16' : 'top-[6.5rem]';
 
   return (
-    <div className={`pointer-events-none absolute inset-x-0 ${top} z-50 flex justify-center px-4`}>
+    <div className={`pointer-events-none absolute inset-x-0 ${top} z-[56] flex justify-center px-4`}>
       <div
         role="dialog"
         aria-label="恢复未保存的草稿"
