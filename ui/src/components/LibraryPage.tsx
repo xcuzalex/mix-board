@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { VaultEntry } from '../platform';
 import { useDocumentStore } from '../store/document';
 import { useBoardThumbnail } from '../utils/thumbnails';
-import { isPathInside, useVaultStore, type LibrarySection } from '../store/vault';
+import { isPathInside, useVaultStore, whenDownloaded, type LibrarySection } from '../store/vault';
 import {
   chooseLocalDraftsOnly,
   createBoard,
   createFolder,
   openBoard,
   openICloudVault,
+  pickICloudFolder,
   openRecentVault,
   pickVaultFolder,
   renameEntry,
@@ -357,6 +358,9 @@ function VaultSwitcher() {
           <button type="button" className={itemClass} onClick={pick(openICloudVault)}>
             <span className="w-3.5 shrink-0" />使用 iCloud 云盘
           </button>
+          <button type="button" className={itemClass} onClick={pick(pickICloudFolder)}>
+            <span className="w-3.5 shrink-0" />选择 iCloud 云盘中的文件夹…
+          </button>
           {vault && (
             <button type="button" className={itemClass} onClick={pick(chooseLocalDraftsOnly)}>
               <span className="w-3.5 shrink-0" />关闭资料库，只用本机草稿
@@ -399,6 +403,28 @@ function useOnScreen(ref: React.RefObject<HTMLElement | null>) {
   return seen;
 }
 
+/** Bumped by every card click: a slow iCloud download only opens its board if nothing else was clicked meanwhile. */
+let openRequest = 0;
+
+/** Opens a board, first fetching it from iCloud if it isn't on this Mac. */
+async function openBoardDownloading(entry: VaultEntry) {
+  const request = ++openRequest;
+  if (entry.downloaded) {
+    await openBoard(entry.path);
+    return;
+  }
+  const vault = useVaultStore.getState();
+  const progress = `正在从 iCloud 下载「${entry.name}」…`;
+  vault.setNotice(progress, 'progress');
+  const result = await whenDownloaded(entry.path);
+  useVaultStore.getState().clearNotice(progress);
+  // The user moved on (opened another board, left the library): don't jump.
+  if (request !== openRequest || !useVaultStore.getState().libraryOpen) return;
+  if (result === 'downloaded') await openBoard(entry.path);
+  else if (result === 'missing') vault.setNotice(`「${entry.name}」已被移动或删除`);
+  else vault.setNotice(`「${entry.name}」还没能从 iCloud 下载，请检查网络后再试`);
+}
+
 function BoardCard({ entry, location }: { entry: VaultEntry; location?: string }) {
   const isCurrent = useDocumentStore((s) => s.filePath === entry.path);
   const renaming = useVaultStore((s) => s.renamingPath === entry.path);
@@ -412,11 +438,11 @@ function BoardCard({ entry, location }: { entry: VaultEntry; location?: string }
       role="button"
       tabIndex={0}
       aria-label={`打开笔记 ${entry.name}`}
-      onClick={() => entry.downloaded && void openBoard(entry.path)}
+      onClick={() => void openBoardDownloading(entry)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && entry.downloaded && !renaming) void openBoard(entry.path);
+        if (e.key === 'Enter' && !renaming) void openBoardDownloading(entry);
       }}
-      title={entry.downloaded ? undefined : '尚未从 iCloud 下载'}
+      title={entry.downloaded ? undefined : '正在从 iCloud 下载，点击下载后打开'}
       className={`group flex cursor-default flex-col rounded-2xl outline-none ${entry.downloaded ? '' : 'opacity-50'}`}
     >
       <div
@@ -467,7 +493,7 @@ function BoardCard({ entry, location }: { entry: VaultEntry; location?: string }
           <div className="truncate text-[13px] font-medium text-slate-800 dark:text-slate-100" title={entry.name}>{entry.name}</div>
         )}
         <div className="mt-0.5 truncate text-[11px] text-slate-400 dark:text-slate-500">
-          {entry.downloaded ? formatModified(entry.modified) : '未下载'}
+          {entry.downloaded ? formatModified(entry.modified) : '正在从 iCloud 下载…'}
           {location && <> · {location}</>}
         </div>
       </div>
@@ -770,22 +796,28 @@ export function LibraryPage() {
 /** Floating notice for failed vault operations. */
 export function VaultNotice() {
   const notice = useVaultStore((s) => s.notice);
+  const tone = useVaultStore((s) => s.noticeTone);
   const needsWelcome = useVaultStore((s) => s.needsWelcome);
   const setNotice = useVaultStore((s) => s.setNotice);
 
   useEffect(() => {
-    if (!notice) return undefined;
+    // Progress notices stay until whoever showed them clears them.
+    if (!notice || tone === 'progress') return undefined;
     const timer = window.setTimeout(() => setNotice(null), 6000);
     return () => window.clearTimeout(timer);
-  }, [notice, setNotice]);
+  }, [notice, tone, setNotice]);
 
   // The welcome dialog shows its own errors.
   if (!notice || needsWelcome) return null;
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-20 z-[55] flex justify-center px-4">
       <div
-        role="alert"
-        className="pointer-events-auto flex max-w-md items-center gap-3 rounded-2xl border border-red-200 bg-white/90 py-2 pl-4 pr-2 text-[13px] text-red-600 shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl dark:border-red-400/30 dark:bg-[#1c1c1e]/90 dark:text-red-300"
+        role={tone === 'error' ? 'alert' : 'status'}
+        className={`pointer-events-auto flex max-w-md items-center gap-3 rounded-2xl border bg-white/90 py-2 pl-4 pr-2 text-[13px] shadow-[0_12px_36px_rgba(0,0,0,0.14)] backdrop-blur-xl dark:bg-[#1c1c1e]/90 ${
+          tone === 'error'
+            ? 'border-red-200 text-red-600 dark:border-red-400/30 dark:text-red-300'
+            : 'border-black/[0.06] text-slate-700 dark:border-white/10 dark:text-slate-200'
+        }`}
       >
         <span className="min-w-0">{notice}</span>
         <button type="button" onClick={() => setNotice(null)} className="shrink-0 rounded-lg px-2 py-0.5 text-slate-500 hover:bg-black/[0.05] dark:text-slate-400 dark:hover:bg-white/10">

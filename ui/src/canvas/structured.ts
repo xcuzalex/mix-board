@@ -28,6 +28,7 @@ export type EditSlot =
   | { kind: 'card'; col: number; card: number }
   | { kind: 'title' }
   | { kind: 'quadrant'; index: number }
+  | { kind: 'note'; index: number }
   | { kind: 'axis'; axis: 'x' | 'y'; end: 0 | 1 }
   | { kind: 'code' };
 
@@ -44,8 +45,8 @@ const inside = (r: Rect, x: number, y: number) => x >= r.x && x <= r.x + r.w && 
 
 export const TABLE_CELL_PAD = 10;
 export const TABLE_FONT_SIZE = 14;
-const TABLE_MIN_ROW = 36;
-const TABLE_DEFAULT_COL = 140;
+export const TABLE_MIN_ROW = 36;
+export const TABLE_DEFAULT_COL = 140;
 
 export function makeTableCell(text = ''): TableCell {
   return { text, backgroundColor: 'transparent', textColor: '', fontSize: TABLE_FONT_SIZE, textAlign: 'left', fontWeight: 'normal' };
@@ -296,23 +297,27 @@ export function addKanbanCard(el: KanbanElement, col: number): { patch: Partial<
   return { patch: fitKanban(el, columns), card: columns[col].cards.length - 1 };
 }
 
-export function addKanbanColumn(el: KanbanElement): Partial<KanbanElement> {
+/** Inserts an empty column at `index`; the board widens by one column. */
+export function insertKanbanColumn(el: KanbanElement, index: number): Partial<KanbanElement> {
   const colW = (el.width - KANBAN.pad * 2 - KANBAN.gap * (el.columns.length - 1)) / Math.max(1, el.columns.length);
   const color = KANBAN_COLORS[el.columns.length % KANBAN_COLORS.length];
-  return {
-    columns: [...el.columns, { id: generateId(), title: '新的一列', color, cards: [] }],
-    width: el.width + colW + KANBAN.gap,
-  };
+  const columns = [...el.columns];
+  columns.splice(Math.max(0, Math.min(index, columns.length)), 0, { id: generateId(), title: '新的一列', color, cards: [] });
+  return { columns, width: el.width + colW + KANBAN.gap };
 }
 
-/** Removes the last column; its cards move to the column before it (never lost). */
-export function removeKanbanColumn(el: KanbanElement): Partial<KanbanElement> | null {
-  if (el.columns.length <= 1) return null;
+/**
+ * Removes the column at `index`; its cards move to the column before it
+ * (or after it, for the first column), so nothing is lost.
+ */
+export function deleteKanbanColumn(el: KanbanElement, index: number): Partial<KanbanElement> | null {
+  if (el.columns.length <= 1 || index < 0 || index >= el.columns.length) return null;
   const colW = (el.width - KANBAN.pad * 2 - KANBAN.gap * (el.columns.length - 1)) / el.columns.length;
-  const removed = el.columns[el.columns.length - 1];
-  const columns = el.columns.slice(0, -1).map((c, i, list) => (
-    i === list.length - 1 ? { ...c, cards: [...c.cards, ...removed.cards] } : c
-  ));
+  const removed = el.columns[index];
+  const target = index > 0 ? index - 1 : 1;
+  const columns = el.columns
+    .map((c, i) => (i === target ? { ...c, cards: [...c.cards, ...removed.cards] } : c))
+    .filter((_, i) => i !== index);
   const width = el.width - colW - KANBAN.gap;
   return { ...fitKanban({ ...el, width }, columns), width };
 }
@@ -324,7 +329,7 @@ export function kanbanHeight(el: KanbanElement): number {
 
 // --- Matrix ----------------------------------------------------------------
 
-export const MATRIX = { titleH: 40, axisW: 28, axisH: 28, pad: 12, labelH: 30 } as const;
+export const MATRIX = { titleH: 40, axisW: 28, axisH: 28, pad: 12, labelH: 30, fontSize: 14, notePad: 8 } as const;
 
 export const MATRIX_PRESETS = {
   priority: {
@@ -368,6 +373,13 @@ export function matrixLayout(el: MatrixElement) {
     { x: grid.x + hw, y: grid.y + hh, w: hw, h: hh },
   ];
   const labels = quadrants.map((q) => ({ x: q.x + 10, y: q.y + 8, w: q.w - 20, h: MATRIX.labelH }));
+  // The writable area of each quadrant, under its label.
+  const notes = quadrants.map((q) => ({
+    x: q.x + 10,
+    y: q.y + 8 + MATRIX.labelH,
+    w: q.w - 20,
+    h: Math.max(0, q.h - MATRIX.labelH - 16),
+  }));
   const title: Rect = { x: el.x + MATRIX.pad, y: el.y + 6, w: el.width - MATRIX.pad * 2, h: MATRIX.titleH - 8 };
   const axisY = grid.y + grid.h + 4;
   const xAxis: [Rect, Rect] = [
@@ -379,7 +391,7 @@ export function matrixLayout(el: MatrixElement) {
     { x: el.x + MATRIX.pad, y: grid.y + hh, w: MATRIX.axisW - 4, h: hh },
     { x: el.x + MATRIX.pad, y: grid.y, w: MATRIX.axisW - 4, h: hh },
   ];
-  return { grid, quadrants, labels, title, xAxis, yAxis };
+  return { grid, quadrants, labels, notes, title, xAxis, yAxis };
 }
 
 export function matrixSlotAt(el: MatrixElement, x: number, y: number): EditSlot | null {
@@ -391,7 +403,24 @@ export function matrixSlotAt(el: MatrixElement, x: number, y: number): EditSlot 
     if (inside(l.xAxis[end], x, y)) return { kind: 'axis', axis: 'x', end };
     if (inside(l.yAxis[end], x, y)) return { kind: 'axis', axis: 'y', end };
   }
+  const quadrant = l.quadrants.findIndex((r) => inside(r, x, y));
+  if (quadrant >= 0) return { kind: 'note', index: quadrant };
   return null;
+}
+
+export function matrixNotes(el: MatrixElement): [string, string, string, string] {
+  return el.notes ?? ['', '', '', ''];
+}
+
+/** Grows the matrix so the longest quadrant note fits (never shrinks it). */
+function fitMatrix(el: MatrixElement, notes: [string, string, string, string]): Partial<MatrixElement> {
+  const width = matrixLayout(el).notes[0].w - MATRIX.notePad * 2;
+  const tallest = Math.max(0, ...notes.map((text) => (text.trim()
+    ? measureMarkdown(text, { width: Math.max(10, width), fontSize: MATRIX.fontSize, fontFamily: STRUCTURED_FONT }).height
+    : 0)));
+  const quadrantH = tallest + MATRIX.notePad * 2 + MATRIX.labelH + 16;
+  const height = Math.ceil(MATRIX.titleH + MATRIX.pad + MATRIX.axisH + quadrantH * 2);
+  return { notes, height: Math.max(el.height, height) };
 }
 
 // --- Code ------------------------------------------------------------------
@@ -454,6 +483,7 @@ export function slotRect(el: Element, slot: EditSlot): Rect | null {
     const l = matrixLayout(el);
     if (slot.kind === 'title') return l.title;
     if (slot.kind === 'quadrant') return l.labels[slot.index];
+    if (slot.kind === 'note') return l.notes[slot.index] ?? null;
     if (slot.kind === 'axis') {
       // y-axis labels are edited horizontally next to their strip.
       const r = slot.axis === 'x' ? l.xAxis[slot.end] : l.yAxis[slot.end];
@@ -474,6 +504,7 @@ export function getSlotText(el: Element, slot: EditSlot): string {
   if (el.type === 'matrix') {
     if (slot.kind === 'title') return el.title;
     if (slot.kind === 'quadrant') return el.quadrants[slot.index] ?? '';
+    if (slot.kind === 'note') return matrixNotes(el)[slot.index] ?? '';
     if (slot.kind === 'axis') return (slot.axis === 'x' ? el.xAxis : el.yAxis)[slot.end] ?? '';
   }
   if (el.type === 'code' && slot.kind === 'code') return el.code;
@@ -505,6 +536,11 @@ export function applySlotText(el: Element, slot: EditSlot, text: string): Partia
       const quadrants = [...el.quadrants] as MatrixElement['quadrants'];
       quadrants[slot.index] = text;
       return { quadrants } as Partial<Element>;
+    }
+    if (slot.kind === 'note') {
+      const notes = [...matrixNotes(el)] as MatrixElement['quadrants'];
+      notes[slot.index] = text;
+      return fitMatrix(el, notes) as Partial<Element>;
     }
     if (slot.kind === 'axis') {
       const key = slot.axis === 'x' ? 'xAxis' : 'yAxis';
@@ -587,7 +623,7 @@ export function structuredText(el: Element): string {
     case 'kanban':
       return [el.title, ...el.columns.flatMap((c) => [c.title, ...c.cards.map((card) => card.text)])].join('\n');
     case 'matrix':
-      return [el.title, ...el.quadrants].join('\n');
+      return [el.title, ...el.quadrants, ...matrixNotes(el)].join('\n');
     case 'code':
       return el.code;
     default:

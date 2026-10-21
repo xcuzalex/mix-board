@@ -16,7 +16,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string) {
 
 const tauriVault: VaultBridge = {
   status: () => invoke<VaultStatus>('vault_status'),
-  pickFolder: () => invoke<VaultStatus | null>('vault_pick_folder'),
+  pickFolder: (inICloud) => invoke<VaultStatus | null>('vault_pick_folder', { inIcloud: inICloud ?? false }),
   useICloud: () => invoke<VaultStatus>('vault_use_icloud'),
   openRecent: (path) => invoke<VaultStatus>('vault_open_recent', { path }),
   forgetRecent: (path) => invoke<VaultStatus>('vault_forget_recent', { path }),
@@ -24,10 +24,11 @@ const tauriVault: VaultBridge = {
   setLastBoard: (path) => invoke<void>('vault_set_last_board', { path }),
   list: () => invoke<VaultEntry[]>('vault_list'),
   setFavorite: (path, favorite) => invoke<void>('vault_set_favorite', { path, favorite }),
-  createBoard: (dir, content) => invoke<string>('vault_create_board', { dir, content }),
+  createBoard: (dir, content) => invoke<{ path: string; version: string }>('vault_create_board', { dir, content }),
   createFolder: (dir) => invoke<string>('vault_create_folder', { dir }),
   rename: (path, name) => invoke<string>('vault_rename', { path, name }),
   moveToTrash: (path) => invoke<void>('vault_trash', { path }),
+  download: (paths) => invoke<void>('vault_download', { paths }),
 };
 
 /**
@@ -69,17 +70,22 @@ export class TauriBridge implements PlatformBridge {
       filters: [{ name: 'MixNote', extensions: ['mixnote'] }],
     });
     if (!path) return null;
-    await this.writeDocumentFile(path, data);
+    // The user confirmed this target in the dialog: overwrite.
+    await this.writeDocumentFile(path, data, null);
     return path;
   }
 
   /** Atomic write (temp file + rename) on the native side; limited to vault boards and dialog-picked files. */
-  async writeDocumentFile(path: string, data: string): Promise<void> {
-    await invoke<void>('write_document', { path, content: data });
+  async writeDocumentFile(path: string, data: string, base: string | null) {
+    return invoke<{ version: string; otherVersion: string | null }>('write_document', { path, content: data, base });
   }
 
-  async readDocumentFile(path: string): Promise<string> {
-    return invoke<string>('read_document', { path });
+  async documentChanged(path: string, version: string): Promise<boolean> {
+    return invoke<boolean>('document_changed', { path, version });
+  }
+
+  async readDocumentFile(path: string) {
+    return invoke<{ content: string; version: string }>('read_document', { path });
   }
 
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {

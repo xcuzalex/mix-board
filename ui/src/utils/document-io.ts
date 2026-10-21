@@ -11,6 +11,7 @@ import { canvasTheme, isDefaultBackground } from '../canvas/canvas-theme';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
 import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
+import { DOCUMENT_VERSION } from './board-format';
 
 const DEFAULT_DOCUMENT_NAME = '未命名.mixnote';
 const DEFAULT_EXPORT_NAME = 'mixnote-export.png';
@@ -51,7 +52,7 @@ export function serializeDocument(
   }
   const doc = {
     type: 'mixnote',
-    version: 1,
+    version: DOCUMENT_VERSION,
     source: 'MixNote/0.1.0',
     elements,
     appState,
@@ -130,6 +131,7 @@ export function renderBoardThumbnail(elements: Element[], appState: AppState, wi
   );
   const renderer = new Renderer(ctx, viewport);
   renderer.backgroundDots = false;
+  renderer.editingHints = false;
   renderer.setSize(width, height);
   renderer.renderSceneLayer(elements, boardBackground(appState), false, 20);
   return canvas;
@@ -155,6 +157,7 @@ function createExportCanvas(elements: Element[], backgroundColor: string) {
   viewport.update(padding - minX, padding - minY, 1);
   const renderer = new Renderer(ctx, viewport);
   renderer.backgroundDots = false;
+  renderer.editingHints = false;
   renderer.setSize(width, height);
   // Scene layer only: render() would also run the overlay pass, which clears
   // the same canvas to transparent (the live app uses two canvases).
@@ -186,7 +189,9 @@ export async function saveCurrentDocument() {
   if (path) {
     // Edits made while the dialog was open still need saving.
     const unchanged = isUnchangedSince({ elements, appState, files, filePath });
-    useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
+    // A new file the dialog confirmed: the next save simply writes it (no base version).
+    const file = { filePath: path, fileVersion: null };
+    useDocumentStore.setState(unchanged ? { ...file, isDirty: false } : file);
   }
 
   return path;

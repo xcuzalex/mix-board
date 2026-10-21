@@ -6,6 +6,7 @@ import { createDocument } from "../types/document";
 import { generateId } from "../utils/id";
 import { cloneElementsWithNewIds } from "../utils/clone-elements";
 import { queueHydrateEmbeddedFiles } from "../utils/embedded-files";
+import { parseBoardFile } from "../utils/board-format";
 
 interface HistoryEntry {
   elements: Element[];
@@ -25,6 +26,15 @@ interface DocumentStore {
   appState: AppState;
   files: Record<string, EmbeddedFile>;
   filePath: string | null;
+  /**
+   * Version of the file (on disk) that the board's content is based on, as
+   * reported by the native side; passed back when saving so edits made on
+   * another Mac are kept instead of overwritten. '' = unknown (a restored
+   * draft); null = none yet (the next save simply writes).
+   */
+  fileVersion: string | null;
+  /** Bumped whenever another board replaces this one (load / new): async work started on one board checks it before landing. */
+  session: number;
   isDirty: boolean;
 
   // History
@@ -36,10 +46,15 @@ interface DocumentStore {
   removeElements: (ids: string[]) => void;
   updateElement: (id: string, updates: Partial<Element>) => void;
   addEmbeddedFile: (file: EmbeddedFile) => void;
-  /** Replaces the document; returns false (leaving it untouched) if `json` isn't a board. */
-  loadDocument: (json: string) => boolean;
+  /**
+   * Replaces the board with a saved file's contents; on failure returns why
+   * ('invalid' or 'newer' format) and leaves the board untouched. The caller
+   * sets the file path and version (`setFilePath`).
+   */
+  loadDocument: (json: string) => true | 'invalid' | 'newer';
   newDocument: () => void;
-  setFilePath: (path: string | null) => void;
+  /** Sets the open file and the version its content is based on. */
+  setFilePath: (path: string | null, version: string | null) => void;
   applyTransaction: (
     recipe: (draft: DocumentTransactionDraft) => void,
     options?: { pushHistory?: boolean; markDirty?: boolean },
@@ -92,27 +107,14 @@ function snapshotOf(
 /** Checkpoint waiting for the first real change (see `pushHistory`). */
 let pendingCheckpoint: HistoryEntry | null = null;
 
-function parseBoard(json: string): { elements: Element[]; appState: AppState; files: Record<string, EmbeddedFile> } | null {
-  try {
-    const doc = JSON.parse(json);
-    const knownType = doc?.type === undefined || doc.type === "mixnote" || doc.type === "mixboard";
-    if (!doc || typeof doc !== "object" || !knownType || !Array.isArray(doc.elements)) return null;
-    return {
-      elements: doc.elements,
-      appState: { ...createDocument().appState, ...(doc.appState ?? {}) },
-      files: doc.files && typeof doc.files === "object" ? doc.files : {},
-    };
-  } catch {
-    return null;
-  }
-}
-
 export const useDocumentStore = create<DocumentStore>()(
   immer((set, get) => ({
     elements: [],
     appState: createDocument().appState,
     files: createDocument().files,
     filePath: null,
+    fileVersion: null,
+    session: 0,
     isDirty: false,
     undoStack: [],
     redoStack: [],
@@ -148,8 +150,9 @@ export const useDocumentStore = create<DocumentStore>()(
       }),
 
     loadDocument: (json) => {
-      const board = parseBoard(json);
-      if (!board) return false;
+      const parsed = parseBoardFile(json);
+      if (!parsed.ok) return parsed.reason;
+      const { board } = parsed;
       pendingCheckpoint = null;
       set((state) => {
         state.elements = board.elements;
@@ -158,6 +161,7 @@ export const useDocumentStore = create<DocumentStore>()(
         state.isDirty = false;
         state.undoStack = [];
         state.redoStack = [];
+        state.session += 1;
       });
       queueHydrateEmbeddedFiles(board.files);
       return true;
@@ -171,6 +175,8 @@ export const useDocumentStore = create<DocumentStore>()(
         state.appState = doc.appState;
         state.files = doc.files;
         state.filePath = null;
+        state.fileVersion = null;
+        state.session += 1;
         state.isDirty = false;
         state.undoStack = [];
         state.redoStack = [];
@@ -178,9 +184,10 @@ export const useDocumentStore = create<DocumentStore>()(
       });
     },
 
-    setFilePath: (path) =>
+    setFilePath: (path, version) =>
       set((state) => {
         state.filePath = path;
+        state.fileVersion = version;
       }),
 
     // Layer ordering

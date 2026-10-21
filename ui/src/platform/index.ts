@@ -34,8 +34,8 @@ export interface VaultEntry {
  */
 export interface VaultBridge {
   status(): Promise<VaultStatus>;
-  /** Native folder picker; null when cancelled. */
-  pickFolder(): Promise<VaultStatus | null>;
+  /** Native folder picker (starting in iCloud Drive when `inICloud`); null when cancelled. */
+  pickFolder(inICloud?: boolean): Promise<VaultStatus | null>;
   useICloud(): Promise<VaultStatus>;
   openRecent(path: string): Promise<VaultStatus>;
   forgetRecent(path: string): Promise<VaultStatus>;
@@ -43,22 +43,31 @@ export interface VaultBridge {
   setLastBoard(path: string | null): Promise<void>;
   list(): Promise<VaultEntry[]>;
   setFavorite(path: string, favorite: boolean): Promise<void>;
-  /** Creates `未命名 N.mixnote` in `dir` (vault root when null); returns its path. */
-  createBoard(dir: string | null, content: string): Promise<string>;
+  /** Creates `未命名 N.mixnote` in `dir` (vault root when null); returns its path and file version. */
+  createBoard(dir: string | null, content: string): Promise<{ path: string; version: string }>;
   createFolder(dir: string | null): Promise<string>;
   /** Renames in place (boards keep their extension); returns the new path. */
   rename(path: string, name: string): Promise<string>;
   moveToTrash(path: string): Promise<void>;
+  /** Asks iCloud to download boards not stored on this Mac yet (`downloaded: false`). */
+  download(paths: string[]): Promise<void>;
 }
 
 export interface PlatformBridge {
   saveFile(data: string, defaultPath?: string): Promise<string | null>;
   openFile(): Promise<{ path: string; content: string } | null>;
   saveAsFile(data: string, defaultPath?: string): Promise<string | null>;
-  /** Overwrite a document the user already picked, without a dialog (desktop only). */
-  writeDocumentFile(path: string, data: string): Promise<void>;
-  /** Read a document by path without a dialog (desktop only). */
-  readDocumentFile(path: string): Promise<string>;
+  /**
+   * Writes a document by path, without a dialog (desktop only). `base` is the
+   * file version the content is based on: if the file is no longer at that
+   * version (edited on another Mac) and differs, that version is kept as a
+   * sibling copy first (`otherVersion`). '' = unknown base; null = overwrite.
+   */
+  writeDocumentFile(path: string, data: string, base: string | null): Promise<{ version: string; otherVersion: string | null }>;
+  /** Whether the file is no longer at `version` (changed on another Mac, via iCloud). */
+  documentChanged(path: string, version: string): Promise<boolean>;
+  /** Read a document by path without a dialog (desktop only), with its file version. */
+  readDocumentFile(path: string): Promise<{ content: string; version: string }>;
   /** Vault access; null on the web, which keeps drafts + download/upload. */
   readonly vault: VaultBridge | null;
   exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null>;

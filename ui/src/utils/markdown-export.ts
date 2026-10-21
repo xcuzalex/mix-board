@@ -11,6 +11,7 @@
  */
 import type { Element, MindmapElement, MindmapNode } from '../types/element';
 import { getMindmapSiblings } from '../canvas/mindmap-ops';
+import { matrixNotes } from '../canvas/structured';
 
 const ROW_HEIGHT = 40;
 
@@ -66,7 +67,11 @@ function elementToMarkdown(el: Element): string | null {
         ...el.columns.flatMap((column) => ['', `### ${column.title.trim() || '未命名'}`, ...column.cards.map((card) => `- ${card.text.trim().replace(/\n/g, ' ')}`)]),
       ].join('\n');
     case 'matrix':
-      return [`## ${el.title.trim() || '四象限'}`, '', ...el.quadrants.map((q) => `- ${q}`)].join('\n');
+      // Each quadrant becomes a sub-heading followed by what was written in it.
+      return [`## ${el.title.trim() || '四象限'}`, ...el.quadrants.flatMap((q, i) => {
+        const note = matrixNotes(el)[i].trim();
+        return ['', `### ${q}`, ...(note ? ['', note] : [])];
+      })].join('\n');
     case 'code':
       return `\`\`\`${el.language === 'plaintext' ? '' : el.language}\n${el.code}\n\`\`\``;
     default:

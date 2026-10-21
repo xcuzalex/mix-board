@@ -9,16 +9,19 @@ import {
   CODE,
   CODE_FONT,
   KANBAN,
+  MATRIX,
   STRUCTURED_FONT,
   TABLE_CELL_PAD,
   TABLE_FONT_SIZE,
   kanbanLayout,
   matrixLayout,
+  matrixNotes,
   tableGrid,
+  type EditSlot,
   type Rect,
 } from '../structured';
-import { drawMarkdown, type LinkHit } from './markdown';
-import { withAlpha } from './color';
+import { drawMarkdown, type LinkHit, type MarkdownOptions, type TaskHit } from './markdown';
+import { blendOver, withAlpha } from './color';
 
 function roundRect(ctx: CanvasRenderingContext2D, r: Rect, radius: number) {
   ctx.beginPath();
@@ -40,6 +43,34 @@ function clipped(ctx: CanvasRenderingContext2D, r: Rect, draw: () => void) {
   ctx.restore();
 }
 
+/** A todo checkbox inside one slot (cell, card, quadrant note) of an element. */
+export type SlotTaskHit = TaskHit & { slot: EditSlot };
+
+/**
+ * Draws a slot's Markdown clipped to `clip`, tagging its todo checkboxes with
+ * the slot. Links and checkboxes cut off by the clip aren't clickable (their
+ * hit boxes would otherwise reach into the neighbouring cell or quadrant).
+ */
+function drawSlotMarkdown(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  opts: MarkdownOptions,
+  slot: EditSlot,
+  clip: Rect,
+  hits?: LinkHit[],
+  tasks?: SlotTaskHit[],
+) {
+  const links: LinkHit[] = [];
+  const todos: TaskHit[] = [];
+  clipped(ctx, clip, () => drawMarkdown(ctx, text, opts, hits && links, tasks && todos));
+  const visible = (h: { y: number; h: number }) => h.y + h.h / 2 <= clip.y + clip.h;
+  if (hits) hits.push(...links.filter(visible));
+  if (tasks) for (const t of todos.filter(visible)) tasks.push({ ...t, slot });
+}
+
+/** Lines starting with a list, todo or heading marker: wrapping them in ** would hide the marker. */
+const BLOCK_MARKER = /^\s*(?:[-*]\s|\[[ xX]\]\s|\d+\.\s|#{1,3}\s|>)/u;
+
 function singleLine(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number) {
   let value = text;
   if (ctx.measureText(value).width > maxWidth) {
@@ -51,7 +82,7 @@ function singleLine(ctx: CanvasRenderingContext2D, text: string, x: number, y: n
 
 // --- Table -------------------------------------------------------------------
 
-export function drawTable(ctx: CanvasRenderingContext2D, el: TableElement, hits?: LinkHit[]) {
+export function drawTable(ctx: CanvasRenderingContext2D, el: TableElement, hits?: LinkHit[], tasks?: SlotTaskHit[]) {
   const { xs, ws, ys, hs } = tableGrid(el);
   const box = { x: el.x, y: el.y, w: el.width, h: el.height };
   const fg = el.strokeColor && el.strokeColor !== '#1B1B1F' ? el.strokeColor : canvasTheme.foreground;
@@ -92,19 +123,19 @@ export function drawTable(ctx: CanvasRenderingContext2D, el: TableElement, hits?
   el.cells.forEach((row, r) => row.forEach((cell, c) => {
     if (!cell.text) return;
     const rect = { x: xs[c], y: ys[r], w: ws[c], h: hs[r] };
-    clipped(ctx, rect, () => {
-      // The first row of a table with a header is bold, whatever moved into it.
-      const bold = (el.headerRow && r === 0) || cell.fontWeight === 'bold';
-      const text = bold && !cell.text.includes('**') && !cell.text.includes('\n') ? `**${cell.text}**` : cell.text;
-      drawMarkdown(ctx, text, {
-        x: rect.x + TABLE_CELL_PAD,
-        y: rect.y + TABLE_CELL_PAD - 2,
-        width: Math.max(10, rect.w - TABLE_CELL_PAD * 2),
-        fontSize: cell.fontSize || TABLE_FONT_SIZE,
-        fontFamily: STRUCTURED_FONT,
-        color: cell.textColor || fg,
-      }, hits);
-    });
+    // The first row of a table with a header is bold, whatever moved into it
+    // (single plain lines only: lists, todos and headings keep their markers).
+    const bold = (el.headerRow && r === 0) || cell.fontWeight === 'bold';
+    const plainLine = !cell.text.includes('**') && !cell.text.includes('\n') && !BLOCK_MARKER.test(cell.text);
+    const text = bold && plainLine ? `**${cell.text}**` : cell.text;
+    drawSlotMarkdown(ctx, text, {
+      x: rect.x + TABLE_CELL_PAD,
+      y: rect.y + TABLE_CELL_PAD - 2,
+      width: Math.max(10, rect.w - TABLE_CELL_PAD * 2),
+      fontSize: cell.fontSize || TABLE_FONT_SIZE,
+      fontFamily: STRUCTURED_FONT,
+      color: cell.textColor || fg,
+    }, { kind: 'cell', row: r, col: c }, rect, hits, tasks);
   }));
   ctx.restore();
 
@@ -118,7 +149,8 @@ export function drawTable(ctx: CanvasRenderingContext2D, el: TableElement, hits?
 
 // --- Kanban ------------------------------------------------------------------
 
-export function drawKanban(ctx: CanvasRenderingContext2D, el: KanbanElement, hits?: LinkHit[]) {
+/** `hints` draws editing affordances ("添加卡片", "双击输入…"); off for exports. */
+export function drawKanban(ctx: CanvasRenderingContext2D, el: KanbanElement, hits?: LinkHit[], tasks?: SlotTaskHit[], hints = true) {
   const layout = kanbanLayout(el);
   const fg = canvasTheme.foreground;
   const box = { x: el.x, y: el.y, w: el.width, h: Math.max(el.height, layout.contentHeight) };
@@ -177,19 +209,18 @@ export function drawKanban(ctx: CanvasRenderingContext2D, el: KanbanElement, hit
       // Accent stripe.
       ctx.fillStyle = withAlpha(column.color, 0.9);
       ctx.fillRect(r.x, r.y + 8, 3, r.h - 16);
-      clipped(ctx, r, () => {
-        drawMarkdown(ctx, card.text || ' ', {
-          x: r.x + KANBAN.cardPad,
-          y: r.y + KANBAN.cardPad - 2,
-          width: Math.max(10, r.w - KANBAN.cardPad * 2),
-          fontSize: KANBAN.fontSize,
-          fontFamily: STRUCTURED_FONT,
-          color: fg,
-        }, hits);
-      });
+      drawSlotMarkdown(ctx, card.text || ' ', {
+        x: r.x + KANBAN.cardPad,
+        y: r.y + KANBAN.cardPad - 2,
+        width: Math.max(10, r.w - KANBAN.cardPad * 2),
+        fontSize: KANBAN.fontSize,
+        fontFamily: STRUCTURED_FONT,
+        color: fg,
+      }, { kind: 'card', col: i, card: j }, r, hits, tasks);
     });
 
     // "+ 添加卡片" affordance.
+    if (!hints) return;
     ctx.font = `500 13px ${STRUCTURED_FONT}`;
     ctx.fillStyle = muted();
     ctx.textBaseline = 'middle';
@@ -200,7 +231,14 @@ export function drawKanban(ctx: CanvasRenderingContext2D, el: KanbanElement, hit
 
 // --- Matrix ------------------------------------------------------------------
 
-export function drawMatrix(ctx: CanvasRenderingContext2D, el: MatrixElement) {
+const quadrantTint = () => (canvasTheme.isDark ? 0.12 : 0.07);
+
+/** The quadrant's tinted background as a solid colour (for the editor over it). */
+export function matrixQuadrantBackground(el: MatrixElement, index: number): string {
+  return blendOver(surface(), el.quadrantColors[index] ?? '#8E8E93', quadrantTint());
+}
+
+export function drawMatrix(ctx: CanvasRenderingContext2D, el: MatrixElement, hits?: LinkHit[], tasks?: SlotTaskHit[], hints = true) {
   const l = matrixLayout(el);
   const fg = canvasTheme.foreground;
   const box = { x: el.x, y: el.y, w: el.width, h: el.height };
@@ -221,7 +259,7 @@ export function drawMatrix(ctx: CanvasRenderingContext2D, el: MatrixElement) {
   // Tinted quadrants with their titles.
   l.quadrants.forEach((q, i) => {
     const color = el.quadrantColors[i] ?? '#8E8E93';
-    ctx.fillStyle = withAlpha(color, canvasTheme.isDark ? 0.12 : 0.07);
+    ctx.fillStyle = withAlpha(color, quadrantTint());
     ctx.fillRect(q.x, q.y, q.w, q.h);
     const label = l.labels[i];
     ctx.fillStyle = color;
@@ -231,6 +269,26 @@ export function drawMatrix(ctx: CanvasRenderingContext2D, el: MatrixElement) {
     ctx.font = `600 14px ${STRUCTURED_FONT}`;
     ctx.fillStyle = fg;
     singleLine(ctx, el.quadrants[i] || '', label.x + 18, label.y + label.h / 2, label.w - 18);
+
+    // What's written in the quadrant (Markdown: lists, todos, links…).
+    const body = l.notes[i];
+    const text = matrixNotes(el)[i];
+    if (body.h <= 0) return;
+    if (text.trim()) {
+      drawSlotMarkdown(ctx, text, {
+        x: body.x + MATRIX.notePad,
+        y: body.y + MATRIX.notePad - 2,
+        width: Math.max(10, body.w - MATRIX.notePad * 2),
+        fontSize: MATRIX.fontSize,
+        fontFamily: STRUCTURED_FONT,
+        color: fg,
+      }, { kind: 'note', index: i }, body, hits, tasks);
+      ctx.textBaseline = 'middle';
+    } else if (hints) {
+      ctx.font = `400 13px ${STRUCTURED_FONT}`;
+      ctx.fillStyle = withAlpha(canvasTheme.isDark ? '#E6E6EA' : '#1B1B1F', 0.28);
+      singleLine(ctx, '双击输入…', body.x + MATRIX.notePad, body.y + MATRIX.notePad + 8, body.w - MATRIX.notePad * 2);
+    }
   });
 
   // Axes: cross lines with arrowheads.

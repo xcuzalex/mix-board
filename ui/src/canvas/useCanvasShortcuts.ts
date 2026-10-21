@@ -236,13 +236,13 @@ export function useCanvasShortcuts(params: CanvasShortcutsParams) {
             handleSave();
             e.preventDefault();
             return;
+          // Copy / paste keep their default action, so the native copy and
+          // paste events fire and carry the system clipboard (images, text).
           case 'c':
             handleCopy();
-            e.preventDefault();
             return;
           case 'v':
             handlePaste();
-            e.preventDefault();
             return;
           case 'd':
             handleDuplicate();

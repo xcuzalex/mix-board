@@ -15,8 +15,8 @@ import type { Renderer } from './renderer';
 import { getElementShapeVariant } from './shape-utils';
 import { findMindmapNode } from './mindmap-ops';
 import { STICKY_NOTE_COLORS } from '../utils/color';
-import { CODE, CODE_FONT, KANBAN, STRUCTURED_FONT, TABLE_CELL_PAD, slotRect, type EditSlot } from './structured';
-import { codeEditorColors } from './render/structured';
+import { CODE, CODE_FONT, KANBAN, MATRIX, STRUCTURED_FONT, TABLE_CELL_PAD, slotRect, type EditSlot } from './structured';
+import { codeEditorColors, matrixQuadrantBackground } from './render/structured';
 import { canvasTheme } from './canvas-theme';
 
 const EDIT_PLACEHOLDERS = new Set(['输入文本', '中心主题', '新主题', '分区', '框架']);
@@ -144,7 +144,8 @@ export interface EditingPosition {
   backgroundColor?: string;
   borderRadius?: number;
   textAlign?: 'center' | 'left';
-  chrome?: 'plain' | 'panel';
+  /** plain: no frame; panel: floating card; cell: flat, exactly over a table cell / kanban card. */
+  chrome?: 'plain' | 'panel' | 'cell';
   /** Unitless line height; defaults to the editor's 1.3. */
   lineHeight?: number;
 }
@@ -310,10 +311,22 @@ function computeSlotEditingPosition(el: Element, slot: EditSlot, zoom: number, v
     };
   }
   if (slot.kind === 'cell') {
-    return { ...base, fontSize: 14 * zoom, padding: `${(TABLE_CELL_PAD - 2) * zoom}px ${TABLE_CELL_PAD * zoom}px`, borderRadius: 2 * zoom };
+    return { ...base, chrome: 'cell', fontSize: 14 * zoom, padding: `${(TABLE_CELL_PAD - 2) * zoom}px ${TABLE_CELL_PAD * zoom}px`, borderRadius: 0 };
   }
   if (slot.kind === 'card') {
-    return { ...base, fontSize: KANBAN.fontSize * zoom, padding: `${(KANBAN.cardPad - 2) * zoom}px ${KANBAN.cardPad * zoom}px`, borderRadius: 8 * zoom };
+    return { ...base, chrome: 'cell', fontSize: KANBAN.fontSize * zoom, padding: `${(KANBAN.cardPad - 2) * zoom}px ${KANBAN.cardPad * zoom}px`, borderRadius: 8 * zoom };
+  }
+  if (el.type === 'matrix' && slot.kind === 'note') {
+    // Write in place: same font, line height and inset as the drawn note.
+    return {
+      ...base,
+      chrome: 'cell',
+      fontSize: MATRIX.fontSize * zoom,
+      lineHeight: 1.45,
+      padding: `${(MATRIX.notePad - 2) * zoom}px ${MATRIX.notePad * zoom}px`,
+      backgroundColor: matrixQuadrantBackground(el, slot.index),
+      borderRadius: 6 * zoom,
+    };
   }
   const titleLike = slot.kind === 'title';
   return {

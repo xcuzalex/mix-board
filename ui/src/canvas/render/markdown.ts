@@ -26,6 +26,49 @@ export interface LinkHit {
   h: number;
 }
 
+/** A clickable todo checkbox: `line` is the source line it toggles. */
+export interface TaskHit {
+  line: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Flips `[ ]` ↔ `[x]` on one source line (a todo or `- [ ]` item). */
+export function toggleTaskLine(source: string, line: number): string {
+  const lines = source.split('\n');
+  const text = lines[line];
+  if (text === undefined) return source;
+  lines[line] = text.replace(/^(\s*(?:[-*]\s+)?)\[([ xX])\]/u, (_, prefix: string, mark: string) => `${prefix}[${mark === ' ' ? 'x' : ' '}]`);
+  return lines.join('\n');
+}
+
+/**
+ * Enter inside a list keeps the list going: the new line gets the same bullet,
+ * an unchecked todo, or the next number (text after the caret moves along).
+ * Enter on an item with no text at all ends the list (the marker is removed).
+ * Returns null when the caret isn't after a list marker (plain newline).
+ */
+export function continueListOnEnter(value: string, caret: number): { value: string; caret: number } | null {
+  const lineStart = value.lastIndexOf('\n', caret - 1) + 1;
+  const lineEnd = value.indexOf('\n', caret);
+  const line = value.slice(lineStart, caret);
+  const m = line.match(/^(\s*)((?:[-*]\s+)?\[[ xX]\]\s+|[-*]\s+|(\d+)\.\s+)/u);
+  if (!m) return null;
+  const restOfLine = value.slice(caret, lineEnd === -1 ? value.length : lineEnd);
+  if (line.slice(m[0].length).trim() === '' && restOfLine.trim() === '') {
+    // Empty item: drop the marker and leave the list.
+    const next = value.slice(0, lineStart) + value.slice(caret);
+    return { value: next, caret: lineStart };
+  }
+  let marker = m[2];
+  if (m[3]) marker = `${Number(m[3]) + 1}. `;
+  else marker = marker.replace(/\[[xX]\]/u, '[ ]');
+  const insert = `\n${m[1]}${marker}`;
+  return { value: value.slice(0, caret) + insert + value.slice(caret), caret: caret + insert.length };
+}
+
 type InlineRun = { text: string; bold: boolean; italic: boolean; code: boolean; link: boolean };
 
 const CODE_FAMILY = "'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace";
@@ -131,6 +174,8 @@ interface MarkdownLayout {
   ops: LayoutOp[];
   /** Link regions relative to the layout origin. */
   hits: LinkHit[];
+  /** Todo checkbox regions relative to the layout origin. */
+  tasks: TaskHit[];
   width: number;
   height: number;
 }
@@ -158,10 +203,12 @@ function computeLayout(
   const blocks = parseBlocks(source, fontSize);
   const ops: LayoutOp[] = [];
   const hits: LinkHit[] = [];
+  const tasks: TaskHit[] = [];
   let y = 0;
   let maxRight = 0;
 
-  for (const block of blocks) {
+  // parseBlocks yields exactly one block per source line, so index = line.
+  for (const [line, block] of blocks.entries()) {
     y += block.spacingBefore;
     const lineHeight = block.size * 1.45;
 
@@ -179,6 +226,8 @@ function computeLayout(
     } else if (block.marker === 'todo' || block.marker === 'done') {
       const bs = block.size * 0.82;
       ops.push({ kind: 'checkbox', x: 1, y: y + (block.size - bs) / 2 + 1, size: bs, done: block.marker === 'done' });
+      // A generous hit box around the checkbox.
+      tasks.push({ line, x: -2, y: y - 2, w: bs + 8, h: block.size * 1.3 + 4 });
     }
 
     if (block.quote) {
@@ -226,7 +275,7 @@ function computeLayout(
     y += lineHeight;
   }
 
-  return { ops, hits, width: maxRight, height: y };
+  return { ops, hits, tasks, width: maxRight, height: y };
 }
 
 function getLayout(
@@ -319,6 +368,7 @@ export function drawMarkdown(
   source: string,
   opts: MarkdownOptions & { measureOnly?: boolean },
   hits?: LinkHit[],
+  tasks?: TaskHit[],
 ): { width: number; height: number } {
   const { x, y, width, fontSize, fontFamily, color } = opts;
   const layout = getLayout(ctx, source, width, fontSize, fontFamily);
@@ -330,6 +380,9 @@ export function drawMarkdown(
   }
   if (hits) {
     for (const h of layout.hits) hits.push({ name: h.name, x: x + h.x, y: y + h.y, w: h.w, h: h.h });
+  }
+  if (tasks) {
+    for (const t of layout.tasks) tasks.push({ line: t.line, x: x + t.x, y: y + t.y, w: t.w, h: t.h });
   }
 
   return { width: layout.width, height: layout.height };

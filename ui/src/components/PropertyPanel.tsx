@@ -10,12 +10,10 @@ import {
   CODE_LANGUAGES,
   KANBAN_COLORS,
   MATRIX_PRESETS,
-  addKanbanColumn,
   deleteTableColumn,
   deleteTableRow,
   insertTableColumn,
   insertTableRow,
-  removeKanbanColumn,
 } from '../canvas/structured';
 import type {
   Element,
@@ -532,12 +530,6 @@ export function PropertyPanel() {
         icon: <KanbanIcon />,
         content: (
           <>
-            <Field label="列（双击标题或卡片可编辑，拖动卡片可换列）">
-              <div className="grid grid-cols-2 gap-1">
-                <TextBtn onClick={() => only(addKanbanColumn(el) as Partial<Element>)}>添加一列</TextBtn>
-                <TextBtn disabled={el.columns.length <= 1} onClick={() => only(removeKanbanColumn(el) as Partial<Element> | null)}>删除最后一列</TextBtn>
-              </div>
-            </Field>
             <Field label="列颜色">
               <div className="flex flex-col gap-1.5">
                 {el.columns.map((column, i) => (

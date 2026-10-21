@@ -262,6 +262,8 @@ export interface MatrixElement extends BaseProperties {
   /** Quadrant titles: top-left, top-right, bottom-left, bottom-right. */
   quadrants: [string, string, string, string];
   quadrantColors: [string, string, string, string];
+  /** Markdown written straight into each quadrant (lists, todos…). */
+  notes?: [string, string, string, string];
   /** Axis labels: x low → high, y low → high. */
   xAxis: [string, string];
   yAxis: [string, string];

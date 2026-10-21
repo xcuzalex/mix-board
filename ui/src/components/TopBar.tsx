@@ -9,6 +9,7 @@ import { useVaultStore } from '../store/vault';
 import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
 import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 import { createBoard, openBoard, openLibrary, pickVaultFolder } from '../utils/vault';
+import { parseFailureMessage } from '../utils/board-format';
 
 const NATIVE_MENU_EVENT = 'mixnote-native-menu';
 
@@ -59,10 +60,11 @@ async function openDocumentFile() {
   // Save the current board first; replacing it keeps its draft recoverable.
   await settleDocument();
   const doc = useDocumentStore.getState();
-  if (doc.loadDocument(result.content)) {
-    doc.setFilePath(result.path);
+  const loaded = doc.loadDocument(result.content);
+  if (loaded === true) {
+    doc.setFilePath(result.path, null);
   } else {
-    useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 笔记');
+    useVaultStore.getState().setNotice(`无法打开：${parseFailureMessage(loaded)}`);
   }
 }
 

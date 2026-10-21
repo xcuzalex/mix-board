@@ -1,6 +1,6 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { useDocumentStore } from '../store/document';
-import { useUIStore } from '../store/ui';
+import { getViewportCenter, useUIStore } from '../store/ui';
 import { Renderer } from './renderer';
 import { Viewport } from './viewport';
 import { hitTest, getResizeHandle, SpatialIndex } from './hit-test';
@@ -27,6 +27,7 @@ import {
   moveKanbanCard,
   nextTableCell,
   slotAt,
+  structuredText,
   type EditSlot,
 } from './structured';
 import {
@@ -38,8 +39,11 @@ import {
   mapMindmapTree,
 } from './mindmap-ops';
 import { useCanvasShortcuts } from './useCanvasShortcuts';
+import { TableControls } from './TableControls';
+import { KanbanControls } from './KanbanControls';
 import { buildLinkIndex, getNoteTitle } from '../utils/links';
-import { measureMarkdown, CARD_PADDING, DEFAULT_NOTE_FONT, MIN_CARD_HEIGHT } from './render/markdown';
+import { continueListOnEnter, toggleTaskLine, measureMarkdown, CARD_PADDING, DEFAULT_NOTE_FONT, MIN_CARD_HEIGHT } from './render/markdown';
+import { createNoteCard } from './note-card';
 import { getEditableDraft, computeEditingPosition } from './text-editing';
 import { canvasTheme, isDefaultBackground, setCanvasTheme } from './canvas-theme';
 import {
@@ -59,13 +63,31 @@ import { registerPendingCanvasInteractionFlush } from '../utils/canvas-interacti
 import type { SnapGuide } from '../utils/math';
 import { exportCurrentBoardAsImage, saveCurrentDocument } from '../utils/document-io';
 import { useVaultStore } from '../store/vault';
+import { MIXNOTE_MIME, decodeImage, isTypingTarget, payloadFromDataTransfer, readSystemClipboard, type ClipboardPayload } from './clipboard';
 
 const viewport = new Viewport();
 const interactionState = createInteractionState();
 
-// Module-level clipboard
+// Module-level clipboard (elements copied on a board), plus the plain text the
+// same copy put on the system clipboard, so a paste can tell the two apart.
 let clipboard: Element[] = [];
+let lastCopiedText: string | null = null;
 const EMPTY_SCENE = createSceneIndex([]);
+
+/**
+ * A key that belongs to an input method (e.g. the Enter confirming a Chinese
+ * candidate). WebKit sends that Enter after compositionend, with isComposing
+ * false but keyCode 229, so both are checked.
+ */
+function isImeKey(e: React.KeyboardEvent) {
+  return e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229;
+}
+
+/** Cancels a pending fallback timer held in `ref`. */
+function disarm(ref: { current: number | null }) {
+  if (ref.current !== null) window.clearTimeout(ref.current);
+  ref.current = null;
+}
 
 type StickyEndpointState = {
   binding: LinearElement['startBinding'];
@@ -787,12 +809,79 @@ export function Canvas() {
     void saveCurrentDocument();
   }, []);
 
+  /**
+   * The todo checkbox under a canvas point, on the element actually on top
+   * there: a checkbox covered by an image or another note isn't clickable.
+   */
+  const taskAtPoint = useCallback((x: number, y: number) => {
+    const task = sceneRendererRef.current?.getTaskAtPoint(x, y);
+    if (!task) return null;
+    const element = hitTest(sceneIndexRef.current, x, y, spatialIndexRef.current ?? undefined);
+    return element?.id === task.elementId ? { task, element } : null;
+  }, []);
+
   // --- Copy/Paste ---
+  /** Copies the selection to the board clipboard; returns its plain text for the system clipboard. */
   const handleCopy = useCallback(() => {
-    clipboard = elements.filter(el => selectedIds.includes(el.id)).map(el => JSON.parse(JSON.stringify(el)));
+    const copied = elements.filter(el => selectedIds.includes(el.id));
+    if (copied.length === 0) return null;
+    clipboard = copied.map(el => JSON.parse(JSON.stringify(el)));
+    const plain = copied
+      .map((el) => ('text' in el && typeof el.text === 'string' ? el.text : structuredText(el)))
+      .filter((text) => text.trim())
+      .join('\n\n');
+    lastCopiedText = plain;
+    return plain;
   }, [elements, selectedIds]);
 
-  const handlePaste = useCallback(() => {
+  /** Where pasted content lands: under the pointer, else the middle of the view. */
+  const pastePoint = () => {
+    const last = lastPointerScreenRef.current;
+    return last ? viewport.screenToCanvas(last.screenX, last.screenY) : getViewportCenter();
+  };
+
+  /**
+   * Adds images (from a file pick or the clipboard): the first centred on
+   * `at`, the rest in a row to its right. Decoding takes a moment, so nothing
+   * is added if another board was opened meanwhile.
+   */
+  const insertImages = useCallback(async (blobs: Blob[], at: { x: number; y: number }) => {
+    const session = useDocumentStore.getState().session;
+    const ids: string[] = [];
+    let offsetX = 0;
+    for (const blob of blobs) {
+      let decoded: Awaited<ReturnType<typeof decodeImage>>;
+      try {
+        decoded = await decodeImage(blob);
+      } catch {
+        useVaultStore.getState().setNotice('无法读取这张图片');
+        continue;
+      }
+      const fileId = generateId();
+      await loadImageToCache(fileId, decoded.dataURL);
+      if (useDocumentStore.getState().session !== session) return;
+      const scale = Math.min(1, 400 / Math.max(decoded.width, decoded.height));
+      const w = decoded.width * scale;
+      const h = decoded.height * scale;
+      const el = createElementForTool('image', at.x - w / 2 + offsetX, at.y - h / 2);
+      if (!el) continue;
+      if (ids.length === 0) pushHistory();
+      addEmbeddedFile({ id: fileId, mimeType: decoded.mimeType, dataURL: decoded.dataURL, created: Date.now() });
+      (el as ImageElement).fileId = fileId;
+      el.width = w;
+      el.height = h;
+      addElement(el);
+      ids.push(el.id);
+      offsetX += w + 20;
+    }
+    if (ids.length) {
+      setSelectedIds(ids);
+      setSelectedMindmapNode(null);
+    }
+  }, [pushHistory, addEmbeddedFile, addElement, setSelectedIds, setSelectedMindmapNode]);
+
+  /** Pastes the board clipboard (elements copied on a board). */
+  const pasteElements = useCallback(() => {
     if (clipboard.length === 0) return;
     commitPendingElementUpdates();
     pushHistory();
@@ -805,6 +894,101 @@ export function Canvas() {
     // Shift clipboard offset for subsequent pastes
     clipboard = clipboard.map(el => ({ ...el, x: el.x + 20, y: el.y + 20 }));
   }, [commitPendingElementUpdates, pushHistory, addElement, setSelectedIds]);
+
+  /**
+   * Pastes what the system clipboard held: images; else board elements copied
+   * here (when the clipboard came from that copy and they are still held);
+   * else the text, as a note card.
+   */
+  const pastePayload = (payload: ClipboardPayload | null) => {
+    if (payload?.images.length) {
+      void insertImages(payload.images, pastePoint());
+    } else if (!payload || !payload.text.trim() || (payload.fromBoard && clipboard.length > 0)) {
+      pasteElements();
+    } else {
+      const note = createNoteCard(payload.text.replace(/\r\n?/g, '\n').trim(), pastePoint());
+      if (!note) return;
+      commitPendingElementUpdates();
+      pushHistory();
+      addElement(note);
+      setSelectedIds([note.id]);
+      setSelectedMindmapNode(null);
+    }
+  };
+  const pastePayloadRef = useRef(pastePayload);
+  const handleCopyRef = useRef(handleCopy);
+  useLayoutEffect(() => {
+    pastePayloadRef.current = pastePayload;
+    handleCopyRef.current = handleCopy;
+  });
+
+  /** Reads the clipboard through the async API, pasting only if the same board is still open. */
+  const pasteFromSystemClipboard = useCallback(() => {
+    const session = useDocumentStore.getState().session;
+    void readSystemClipboard(lastCopiedText).then((payload) => {
+      if (useDocumentStore.getState().session === session) pastePayloadRef.current(payload);
+    });
+  }, []);
+
+  // Cmd+C / Cmd+V keep their default action, so the native copy / paste
+  // events below fire and carry the system clipboard (images included). These
+  // keyboard handlers only arm a fallback for when no such event follows; the
+  // event handlers always disarm it, whether they handle the event or not.
+  const pasteFallbackRef = useRef<number | null>(null);
+  const copyFallbackRef = useRef<number | null>(null);
+  const handlePaste = useCallback(() => {
+    disarm(pasteFallbackRef);
+    pasteFallbackRef.current = window.setTimeout(() => {
+      pasteFallbackRef.current = null;
+      pasteFromSystemClipboard();
+    }, 120);
+  }, [pasteFromSystemClipboard]);
+
+  /** Writes copied text to the system clipboard ('' still clears what another app put there). */
+  const writeCopiedText = (text: string | null) => {
+    if (text !== null) void navigator.clipboard?.writeText(text).catch(() => undefined);
+  };
+  const handleKeyCopy = useCallback(() => {
+    // Text selected on the page copies natively; leave the board clipboard alone.
+    if (window.getSelection()?.isCollapsed === false) return;
+    const text = handleCopyRef.current();
+    disarm(copyFallbackRef);
+    copyFallbackRef.current = window.setTimeout(() => {
+      copyFallbackRef.current = null;
+      writeCopiedText(text);
+    }, 120);
+  }, []);
+  // Context menu: there are no copy / paste events, so use the clipboard API.
+  const handleMenuCopy = () => writeCopiedText(handleCopy());
+  const handleMenuPaste = pasteFromSystemClipboard;
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      disarm(pasteFallbackRef);
+      if (isTypingTarget(e.target) || !e.clipboardData) return;
+      if (useVaultStore.getState().libraryOpen) return;
+      e.preventDefault();
+      pastePayloadRef.current(payloadFromDataTransfer(e.clipboardData, lastCopiedText));
+    };
+    const onCopy = (e: ClipboardEvent) => {
+      disarm(copyFallbackRef);
+      if (isTypingTarget(e.target) || !e.clipboardData) return;
+      // Text selected on the page (outline, panels) copies as usual.
+      if (window.getSelection()?.isCollapsed === false) return;
+      if (useVaultStore.getState().libraryOpen) return;
+      const text = handleCopyRef.current();
+      if (text === null) return;
+      e.preventDefault();
+      if (text) e.clipboardData.setData('text/plain', text);
+      e.clipboardData.setData(MIXNOTE_MIME, '1');
+    };
+    window.addEventListener('paste', onPaste);
+    window.addEventListener('copy', onCopy);
+    return () => {
+      window.removeEventListener('paste', onPaste);
+      window.removeEventListener('copy', onCopy);
+    };
+  }, []);
 
   const handleDuplicate = useCallback(() => {
     if (selectedIds.length === 0) return;
@@ -861,9 +1045,24 @@ export function Canvas() {
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
 
-    // Click a [[link]] rendered on a card → jump to the linked note.
-    if (activeTool === 'select') {
+    if (activeTool === 'select' && e.button === 0 && !spaceRef.current) {
       const cp = viewport.screenToCanvas(screenX, screenY);
+      // Click a todo checkbox → tick / untick it in place.
+      const hit = taskAtPoint(cp.x, cp.y);
+      if (hit) {
+        const { task, element } = hit;
+        const patch = task.slot
+          ? applySlotText(element, task.slot, toggleTaskLine(getSlotText(element, task.slot), task.line))
+          : element.type === 'text' || element.type === 'sticky_note'
+            ? { text: toggleTaskLine(element.text, task.line) } as Partial<Element>
+            : null;
+        if (patch) {
+          pushHistory();
+          updateElement(element.id, patch);
+          return;
+        }
+      }
+      // Click a [[link]] rendered on a card → jump to the linked note.
       const link = sceneRendererRef.current?.getLinkAtPoint(cp.x, cp.y);
       if (link) {
         const targetId = buildLinkIndex(elements).titleToId.get(link.name.toLowerCase());
@@ -928,52 +1127,9 @@ export function Canvas() {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.onchange = async (ev) => {
+      input.onchange = (ev) => {
         const file = (ev.target as HTMLInputElement).files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = async () => {
-          const dataURL = reader.result as string;
-          const fileId = generateId();
-          // Get image dimensions (and make sure it decodes) before caching it
-          const img = new Image();
-          img.src = dataURL;
-          try {
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => resolve();
-              img.onerror = () => reject(new Error('decode failed'));
-            });
-          } catch {
-            useVaultStore.getState().setNotice('无法读取这张图片');
-            return;
-          }
-          await loadImageToCache(fileId, dataURL);
-          const maxDim = 400;
-          let w = img.width;
-          let h = img.height;
-          if (w > maxDim || h > maxDim) {
-            const scale = maxDim / Math.max(w, h);
-            w *= scale;
-            h *= scale;
-          }
-          const el = createElementForTool('image', canvasPos.x - w / 2, canvasPos.y - h / 2);
-          if (el) {
-            pushHistory();
-            addEmbeddedFile({
-              id: fileId,
-              mimeType: file.type || 'image/png',
-              dataURL,
-              created: Date.now(),
-            });
-            (el as ImageElement).fileId = fileId;
-            el.width = w;
-            el.height = h;
-            addElement(el);
-            setSelectedIds([el.id]);
-            setSelectedMindmapNode(null);
-          }
-        };
-        reader.readAsDataURL(file);
+        if (file) void insertImages([file], canvasPos);
       };
       input.click();
       setActiveTool('select');
@@ -1230,7 +1386,8 @@ export function Canvas() {
     editingMindmapNode,
     finishEditing,
     addElement,
-    addEmbeddedFile,
+    insertImages,
+    taskAtPoint,
     setActiveTool,
     setActiveShapeVariant,
     startTextEditing,
@@ -1405,7 +1562,8 @@ export function Canvas() {
     // Hovering a rendered [[link]] (select tool, idle) shows a pointer cursor.
     const overLink = activeTool === 'select'
       && actionRef.current === 'none'
-      && !!sceneRendererRef.current?.getLinkAtPoint(canvasPos.x, canvasPos.y);
+      && (!!sceneRendererRef.current?.getLinkAtPoint(canvasPos.x, canvasPos.y)
+        || !!taskAtPoint(canvasPos.x, canvasPos.y));
 
     // Show connection points when hovering near a selected element's edge (select tool, idle)
     if (activeTool === 'select' && actionRef.current === 'none' && selectedIds.length >= 1) {
@@ -1664,6 +1822,7 @@ export function Canvas() {
       invalidateOverlay();
     }
   }, [
+    taskAtPoint,
     elements,
     selectedIds,
     setViewport,
@@ -1869,19 +2028,8 @@ export function Canvas() {
       setSelectedIds([hit.id]);
       setSelectedMindmapNode(null);
       const slot = slotAt(hit, canvasPos.x, canvasPos.y);
-      if (slot) {
-        startSlotEditing(hit, slot);
-      } else if (hit.type === 'matrix') {
-        // Double-click an empty spot in a quadrant: drop a note there.
-        const note = createElementForTool('sticky_note', canvasPos.x - 80, canvasPos.y - 50);
-        if (note) {
-          Object.assign(note, { width: 160, height: 100 });
-          pushHistory();
-          addElement(note);
-          setSelectedIds([note.id]);
-          startTextEditing(note, { isNew: true });
-        }
-      }
+      // In a matrix, double-clicking a quadrant writes straight into it.
+      if (slot) startSlotEditing(hit, slot);
       return;
     }
     const editableOnDoubleClick = ['text', 'sticky_note', 'section', 'frame', 'rectangle', 'ellipse', 'diamond', 'triangle'];
@@ -1952,7 +2100,7 @@ export function Canvas() {
     setActiveShapeVariant,
     setCursorStyle,
     handleSave,
-    handleCopy,
+    handleCopy: handleKeyCopy,
     handlePaste,
     handleDuplicate,
     handleDelete,
@@ -2001,6 +2149,18 @@ export function Canvas() {
     ? noteTitles.filter((t) => t.toLowerCase().includes(linkSuggest.query.toLowerCase())).slice(0, 8)
     : [];
   const activeSuggestion = linkSuggest ? Math.min(linkSuggest.index, linkSuggestions.length - 1) : 0;
+
+  /** Enter inside a list / todo item starts the next item (or ends an empty one). */
+  const continueList = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isImeKey(e)) return;
+    const ta = e.currentTarget;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const next = continueListOnEnter(ta.value, ta.selectionStart);
+    if (!next) return;
+    e.preventDefault();
+    setEditText(next.value);
+    requestAnimationFrame(() => ta.setSelectionRange(next.caret, next.caret));
+  };
 
   const updateLinkSuggest = (value: string, caret: number) => {
     // Query = text after the LAST unclosed "[[" before the caret (no "]", newline or nested "[[").
@@ -2066,15 +2226,35 @@ export function Canvas() {
         tabIndex={0}
       />
 
+      {/* Row / column controls beside the one selected table or kanban */}
+      {(() => {
+        if (selectedIds.length !== 1 || editingElement || editingMindmapNode) return null;
+        const el = elements.find((element) => element.id === selectedIds[0]);
+        const onUpdate = (patch: Partial<Element>) => {
+          if (!el) return;
+          pushHistory();
+          updateElement(el.id, patch);
+        };
+        if (el?.type === 'table') return <TableControls table={el} viewport={viewport} onUpdate={onUpdate} />;
+        if (el?.type === 'kanban') return <KanbanControls board={el} viewport={viewport} onUpdate={onUpdate} />;
+        return null;
+      })()}
+
       {/* Text editing overlay */}
       {(editingElement || editingMindmapNode) && (
         <div className="absolute" style={{ left: editPos.left, top: editPos.top, zIndex: 20 }}>
           <textarea
             ref={textareaRef}
+            // One row: the editor's height comes from editPos / its content, so an
+            // empty table cell editor is exactly as tall as the cell.
+            rows={1}
             className={`block resize-none overflow-hidden outline-none ${
               editPos.chrome === 'plain'
                 ? 'border-0 bg-transparent shadow-none'
-                : editingMindmapNode
+                : editPos.chrome === 'cell'
+                  // Exactly covers the cell / card: flat, with an inset focus ring.
+                  ? 'border-0 shadow-none ring-2 ring-inset ring-[#007aff]'
+                  : editingMindmapNode
                   ? 'border border-emerald-200/90 bg-white/70 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
                   : 'border border-blue-300/90 bg-white/80 shadow-[0_12px_32px_rgba(15,23,42,0.08)]'
             }`}
@@ -2120,7 +2300,7 @@ export function Canvas() {
                   return;
                 }
               }
-              if (editingSlot && editingElement && !e.nativeEvent.isComposing) {
+              if (editingSlot && editingElement && !isImeKey(e)) {
                 if (editingSlot.kind === 'code') {
                   if (e.key === 'Tab') {
                     // Indent inside the code card instead of leaving the editor.
@@ -2133,6 +2313,15 @@ export function Canvas() {
                   } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
                     finishEditing();
+                  }
+                } else if (editingSlot.kind === 'note') {
+                  // A quadrant is a little page: Enter adds lines (continuing
+                  // lists / todos), Cmd+Enter or Escape finishes.
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    finishEditing();
+                  } else if (e.key === 'Enter' && !e.shiftKey) {
+                    continueList(e);
                   }
                 } else if (e.key === 'Tab' && editingSlot.kind === 'cell') {
                   // Tab / Shift+Tab walk through table cells.
@@ -2154,6 +2343,10 @@ export function Canvas() {
                   e.preventDefault();
                   finishEditing();
                 }
+              }
+              if (!editingSlot && editingElement && (editingElement.type === 'sticky_note' || editingElement.type === 'text')
+                && e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                continueList(e);
               }
               if (e.key === 'Escape') {
                 finishEditing();
@@ -2209,8 +2402,8 @@ export function Canvas() {
         onClose={() => setContextMenu({ show: false, x: 0, y: 0 })}
         onDelete={handleDelete}
         onDuplicate={handleDuplicate}
-        onCopy={handleCopy}
-        onPaste={handlePaste}
+        onCopy={handleMenuCopy}
+        onPaste={handleMenuPaste}
         onBringToFront={() => { commitPendingElementUpdates(); pushHistory(); bringToFront(selectedIds); }}
         onSendToBack={() => { commitPendingElementUpdates(); pushHistory(); sendToBack(selectedIds); }}
         onBringForward={() => { commitPendingElementUpdates(); pushHistory(); bringForward(selectedIds); }}

@@ -5,12 +5,18 @@
 //! folder, or the recent list kept here, and every file command checks that its
 //! target lies inside the open vault. Boards are read and written through
 //! `read_document` / `write_document` (atomically), so a vault never needs an fs
-//! plugin scope: the webview's own fs access stays limited to files the user
-//! picked in a dialog.
+//! plugin scope. Outside the vault, only board files the user picked in an
+//! open/save dialog are reachable (remembered in `external_documents`, so they
+//! stay saveable after a restart).
+//!
+//! Every read and write reports the file's version (modification time + size).
+//! The editor keeps the version its content is based on and passes it back
+//! when saving; if the file changed on disk meanwhile (another Mac, via
+//! iCloud), that version is kept as a sibling copy instead of being lost.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
@@ -20,7 +26,7 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::FsExt;
 
-use crate::fs_util::{io_err, write_atomic};
+use crate::fs_util::{create_atomic, io_err, is_temp_file, remove_if_stale_temp, write_atomic};
 
 const CONFIG_FILE: &str = "vaults.json";
 const BOARD_EXTENSION: &str = "mixnote";
@@ -58,11 +64,30 @@ struct VaultConfig {
     /// Last board opened in each vault, keyed by vault path.
     #[serde(default)]
     last_boards: BTreeMap<PathBuf, PathBuf>,
+    /// Boards outside any vault that the user opened or saved through a
+    /// dialog. The dialog's fs-scope grant only lasts until quit; this keeps
+    /// them writable after a restart (e.g. when a draft of one is restored).
+    #[serde(default)]
+    external_documents: Vec<PathBuf>,
 }
+
+/// How many dialog-picked boards keep their access across restarts.
+const MAX_EXTERNAL_DOCUMENTS: usize = 50;
 
 pub struct VaultState {
     config_path: Option<PathBuf>,
     config: Mutex<VaultConfig>,
+}
+
+/// One version of a file, as an opaque token for the UI: modification time
+/// (nanoseconds) and size.
+fn version_of(metadata: &fs::Metadata) -> String {
+    let nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos());
+    format!("{nanos}-{}", metadata.len())
 }
 
 #[derive(Serialize)]
@@ -118,19 +143,25 @@ fn vault_info(path: &Path) -> VaultInfo {
 }
 
 /// `~/Library/Mobile Documents/com~apple~CloudDocs/MixNote`, created if needed.
-/// `None` when iCloud Drive itself is missing (signed out, or Drive turned off):
+/// Fails when iCloud Drive itself is missing (signed out, or Drive turned off):
 /// only the `MixNote` leaf is ever created, never iCloud's own folders.
-fn icloud_vault_dir() -> Option<PathBuf> {
-    let drive = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
-    if !drive.is_dir() {
-        return None;
-    }
+fn icloud_vault_dir() -> CommandResult<PathBuf> {
+    let drive = icloud_drive_dir().ok_or_else(|| err("iCloud 云盘不可用，请在系统设置中登录 iCloud 并开启 iCloud 云盘"))?;
     let dir = drive.join("MixNote");
     match fs::create_dir(&dir) {
-        Ok(()) => Some(dir),
-        Err(e) if e.kind() == ErrorKind::AlreadyExists && dir.is_dir() => Some(dir),
-        Err(_) => None,
+        Ok(()) => Ok(dir),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists && dir.is_dir() => Ok(dir),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            Err(err("iCloud 云盘里已有一个名为“MixNote”的文件（不是文件夹），请改名后重试，或选择 iCloud 中的其他文件夹"))
+        }
+        Err(e) => Err(io_err(e)),
     }
+}
+
+/// `~/Library/Mobile Documents/com~apple~CloudDocs`, when iCloud Drive is on.
+fn icloud_drive_dir() -> Option<PathBuf> {
+    let drive = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
+    drive.is_dir().then_some(drive)
 }
 
 /// Folders that must not become a vault: the disk root, the home folder itself,
@@ -145,6 +176,10 @@ fn refuse_unsafe_root(root: &Path, home: Option<&Path>) -> CommandResult<()> {
     }
     let library = home.join("Library");
     let mobile_documents = library.join("Mobile Documents");
+    // The whole of iCloud Drive holds every app's files: far too much to scan.
+    if root == mobile_documents.join("com~apple~CloudDocs") {
+        return Err(err("请选择 iCloud 云盘里的一个文件夹（可以在对话框里新建），而不是整个 iCloud 云盘"));
+    }
     let in_icloud = root.starts_with(&mobile_documents) && root != mobile_documents;
     if root.starts_with(&library) && !in_icloud {
         return Err(err("不能把“资源库”（~/Library）中的文件夹用作资料库，请选择其他文件夹"));
@@ -222,7 +257,7 @@ impl VaultState {
                 if let Some(dir) = path.parent() {
                     fs::create_dir_all(dir)?;
                 }
-                write_atomic(path, text.as_bytes())
+                write_atomic(path, text.as_bytes()).map(|_| ())
             });
         if let Err(e) = result {
             eprintln!("MixNote: could not save {}: {e}", path.display());
@@ -315,7 +350,7 @@ fn folder_in_vault(root: &Path, dir: Option<&str>) -> CommandResult<PathBuf> {
 /// or a file the user picked in an open/save dialog (the dialog plugin adds
 /// those to the fs scope). Dialog paths must not be symlinks, and their parent
 /// folder is resolved so the atomic write lands next to the real file.
-fn document_path(vault: Option<&Path>, allowed: impl Fn(&Path) -> bool, path: &str) -> CommandResult<PathBuf> {
+fn document_path(vault: Option<&Path>, mut allowed: impl FnMut(&Path) -> bool, path: &str) -> CommandResult<PathBuf> {
     if let Some(root) = vault
         && let Ok(resolved) = inside_vault(root, path)
         && is_board(&resolved)
@@ -339,11 +374,35 @@ fn document_path(vault: Option<&Path>, allowed: impl Fn(&Path) -> bool, path: &s
 }
 
 fn resolve_document<R: Runtime>(app: &AppHandle<R>, state: &VaultState, path: &str) -> CommandResult<PathBuf> {
-    let vault = state.config.lock().unwrap().current.clone();
+    let (vault, known) = {
+        let config = state.config.lock().unwrap();
+        (config.current.clone(), config.external_documents.clone())
+    };
     let scope = app.fs_scope();
-    let resolved = document_path(vault.as_deref(), |path| scope.is_allowed(path), path)?;
+    let mut granted_now = false;
+    let resolved = document_path(vault.as_deref(), |path| {
+        let remembered = known.iter().any(|known| known == path || path.canonicalize().is_ok_and(|real| &real == known));
+        if remembered {
+            return true;
+        }
+        granted_now = scope.is_allowed(path);
+        granted_now
+    }, path)?;
     if resolved.is_dir() {
         return Err(err("所选路径是文件夹，不是笔记文件"));
+    }
+    if !is_board(&resolved) && !is_dialog_document(&resolved) {
+        return Err(err("只能打开或保存 MixNote 笔记文件"));
+    }
+    if granted_now && is_board(&resolved) {
+        // A board picked in a dialog this session: keep it saveable after a
+        // restart. Only boards: other dialog grants (image / Markdown export
+        // targets) stay limited to this session.
+        let mut config = state.config.lock().unwrap();
+        config.external_documents.retain(|known| known != &resolved);
+        config.external_documents.insert(0, resolved.clone());
+        config.external_documents.truncate(MAX_EXTERNAL_DOCUMENTS);
+        state.save(&config);
     }
     Ok(resolved)
 }
@@ -363,6 +422,12 @@ fn validate_name(name: &str) -> CommandResult<&str> {
         return Err(err("名称太长了，请缩短一些"));
     }
     Ok(name)
+}
+
+/// Board JSON the open dialog also accepts (`.json` exports); readable and
+/// writable when picked, but not remembered across restarts.
+fn is_dialog_document(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
 fn is_board(path: &Path) -> bool {
@@ -424,6 +489,10 @@ impl Walk {
                 continue;
             }
             if file_name.starts_with('.') {
+                // Tidy up after a crash mid-save (these sync with the vault otherwise).
+                if is_temp_file(&file_name) {
+                    remove_if_stale_temp(&path, &metadata);
+                }
                 continue;
             }
 
@@ -447,7 +516,7 @@ impl Walk {
                     name: board_stem(&path),
                     kind: "board",
                     modified: modified_ms(&metadata),
-                    downloaded: true,
+                    downloaded: !is_dataless(&metadata),
                     favorite: false,
                 });
             }
@@ -462,7 +531,7 @@ fn board_stem(path: &Path) -> String {
 }
 
 /// Picks `<base>.<ext>`, then `<base> 2.<ext>`, … and creates it atomically.
-fn create_unique(dir: &Path, base: &str, extension: Option<&str>, make: impl Fn(&Path) -> std::io::Result<()>) -> CommandResult<PathBuf> {
+fn create_unique(dir: &Path, base: &str, extension: Option<&str>, mut make: impl FnMut(&Path) -> std::io::Result<()>) -> CommandResult<PathBuf> {
     for n in 1..10_000 {
         let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
         let name = match extension {
@@ -509,7 +578,7 @@ fn write_favorites(root: &Path, favorites: &[String]) -> CommandResult<()> {
         fs::create_dir_all(dir).map_err(io_err)?;
     }
     let text = serde_json::to_string_pretty(favorites).map_err(err)?;
-    write_atomic(&path, text.as_bytes()).map_err(io_err)
+    write_atomic(&path, text.as_bytes()).map(|_| ()).map_err(io_err)
 }
 
 fn relative_key(root: &Path, path: &Path) -> String {
@@ -562,6 +631,36 @@ fn move_to_trash(_path: &Path) -> CommandResult<()> {
     Err(err("此平台暂不支持移到废纸篓"))
 }
 
+/// An iCloud file whose contents were evicted ("dataless"): macOS 14+ keeps it
+/// under its real name instead of a `.Name.icloud` stub, and reading it blocks
+/// until it downloads.
+#[cfg(target_os = "macos")]
+fn is_dataless(metadata: &fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    metadata.st_flags() & SF_DATALESS != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_dataless(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+/// Asks iCloud to download `path` (a dataless file or a `.icloud` stub's real path).
+#[cfg(target_os = "macos")]
+fn start_download(path: &Path) -> CommandResult<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .startDownloadingUbiquitousItemAtURL_error(&url)
+        .map_err(|e| err(e.localizedDescription()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_download(_path: &Path) -> CommandResult<()> {
+    Ok(())
+}
+
 // --- Commands ---
 
 /// Runs off the main thread: it stats every recent vault, which can stall on
@@ -575,10 +674,18 @@ pub fn vault_status(state: State<'_, VaultState>) -> CommandResult<VaultStatus> 
 pub async fn vault_pick_folder<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, VaultState>,
+    in_icloud: Option<bool>,
 ) -> CommandResult<Option<VaultStatus>> {
-    let mut dialog = app.dialog().file().set_title("选择用作资料库的文件夹");
-    if let Some(documents) = dirs::document_dir() {
-        dialog = dialog.set_directory(documents);
+    let mut dialog = app.dialog().file();
+    if in_icloud == Some(true) {
+        // Start in iCloud Drive, so any folder there (or a new one) can be the vault.
+        let drive = icloud_drive_dir().ok_or_else(|| err("iCloud 云盘不可用，请在系统设置中登录 iCloud 并开启 iCloud 云盘"))?;
+        dialog = dialog.set_title("选择 iCloud 云盘中用作资料库的文件夹").set_directory(drive);
+    } else {
+        dialog = dialog.set_title("选择用作资料库的文件夹");
+        if let Some(documents) = dirs::document_dir() {
+            dialog = dialog.set_directory(documents);
+        }
     }
     let Some(picked) = dialog.blocking_pick_folder() else { return Ok(None) };
     let path = picked.into_path().map_err(err)?;
@@ -587,8 +694,7 @@ pub async fn vault_pick_folder<R: Runtime>(
 
 #[tauri::command]
 pub fn vault_use_icloud(state: State<'_, VaultState>) -> CommandResult<VaultStatus> {
-    let dir = icloud_vault_dir().ok_or_else(|| err("iCloud 云盘不可用，请在系统设置中登录 iCloud 并开启 iCloud 云盘"))?;
-    state.open(&dir)
+    state.open(&icloud_vault_dir()?)
 }
 
 #[tauri::command]
@@ -670,17 +776,26 @@ pub fn vault_set_favorite(state: State<'_, VaultState>, path: String, favorite: 
     write_favorites(&root, &favorites)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedBoard {
+    path: String,
+    /// Version of the new file (see `version_of`).
+    version: String,
+}
+
 /// Creates `未命名 N.mixnote` in `dir` (the vault root when omitted) holding
-/// `content`, and returns its path.
+/// `content`, and returns its path and version.
 #[tauri::command]
-pub fn vault_create_board(state: State<'_, VaultState>, dir: Option<String>, content: String) -> CommandResult<String> {
+pub fn vault_create_board(state: State<'_, VaultState>, dir: Option<String>, content: String) -> CommandResult<CreatedBoard> {
     let root = state.root()?;
     let dir = folder_in_vault(&root, dir.as_deref())?;
+    let mut version = String::new();
     let path = create_unique(&dir, UNTITLED_BOARD, Some(BOARD_EXTENSION), |path| {
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-        file.write_all(content.as_bytes())
+        version = version_of(&create_atomic(path, content.as_bytes())?);
+        Ok(())
     })?;
-    Ok(path.to_string_lossy().to_string())
+    Ok(CreatedBoard { path: path.to_string_lossy().to_string(), version })
 }
 
 #[tauri::command]
@@ -741,29 +856,167 @@ pub fn vault_trash(state: State<'_, VaultState>, path: String) -> CommandResult<
     Ok(())
 }
 
-/// Reads a board (see `document_path` for which files are allowed).
+/// Starts downloading boards that iCloud hasn't stored on this Mac yet; the
+/// library polls `vault_list` until they show up as downloaded.
 #[tauri::command(async)]
-pub fn read_document<R: Runtime>(app: AppHandle<R>, state: State<'_, VaultState>, path: String) -> CommandResult<String> {
+pub fn vault_download(state: State<'_, VaultState>, paths: Vec<String>) -> CommandResult<()> {
+    let root = state.root()?;
+    let mut first_error = None;
+    for path in paths {
+        let Ok(path) = inside_vault(&root, &path) else { continue };
+        if !is_board(&path) {
+            continue;
+        }
+        if let Err(e) = start_download(&path) {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentRead {
+    content: String,
+    /// Version of the file these contents came from (see `version_of`).
+    version: String,
+}
+
+/// Reads a board (see `document_path` for which files are allowed), with the
+/// version it was read at. Reading has no side effects: only the editor knows
+/// which version its content is based on.
+#[tauri::command(async)]
+pub fn read_document<R: Runtime>(app: AppHandle<R>, state: State<'_, VaultState>, path: String) -> CommandResult<DocumentRead> {
     let path = resolve_document(&app, &state, &path)?;
-    fs::read_to_string(&path).map_err(io_err)
+    let mut file = fs::File::open(&path).map_err(io_err)?;
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut file, &mut content).map_err(io_err)?;
+    // From the open handle, after reading: describes the bytes just read.
+    let version = version_of(&file.metadata().map_err(io_err)?);
+    Ok(DocumentRead { content, version })
+}
+
+/// Whether the board at `path` is no longer at `version` (another Mac synced a
+/// newer one through iCloud, or another app changed it). A missing file is
+/// not reported as changed.
+#[tauri::command(async)]
+pub fn document_changed<R: Runtime>(app: AppHandle<R>, state: State<'_, VaultState>, path: String, version: String) -> CommandResult<bool> {
+    let path = resolve_document(&app, &state, &path)?;
+    Ok(fs::metadata(&path).is_ok_and(|metadata| version_of(&metadata) != version))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentWritten {
+    /// Version of the file as just written.
+    version: String,
+    /// Where the other device's version was kept, if there was a conflict.
+    other_version: Option<String>,
 }
 
 /// Saves a board atomically, so a crash or a full disk mid-write can't leave a
 /// truncated file (see `document_path` for which files are allowed).
+///
+/// `base` is the version the editor's content is based on: when the file on
+/// disk is no longer at that version (edited on another Mac) and differs from
+/// what is being saved, the disk version is first kept as a sibling copy, so
+/// neither side's edits are lost. `Some("")` means "based on an unknown
+/// version" (e.g. a restored draft), so any different file is kept; `None`
+/// overwrites (a Save As the user confirmed).
 #[tauri::command(async)]
 pub fn write_document<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, VaultState>,
     path: String,
     content: String,
-) -> CommandResult<()> {
+    base: Option<String>,
+) -> CommandResult<DocumentWritten> {
     let path = resolve_document(&app, &state, &path)?;
-    write_atomic(&path, content.as_bytes()).map_err(io_err)
+    let other_version = match (&base, fs::metadata(&path)) {
+        (Some(base), Ok(metadata)) if base.is_empty() || *base != version_of(&metadata) => {
+            keep_if_different(&path, content.as_bytes())?
+        }
+        _ => None,
+    };
+    let written = write_atomic(&path, content.as_bytes()).map_err(io_err)?;
+    Ok(DocumentWritten {
+        version: version_of(&written),
+        other_version: other_version.map(|copy| copy.to_string_lossy().to_string()),
+    })
+}
+
+/// Keeps the current file as `<name>（另一台设备的版本[ N]）.<ext>` next to it,
+/// unless it already holds exactly `content` (only its timestamp changed).
+fn keep_if_different(path: &Path, content: &[u8]) -> CommandResult<Option<PathBuf>> {
+    let bytes = fs::read(path).map_err(io_err)?;
+    if bytes == content {
+        return Ok(None);
+    }
+    keep_other_version(path, &bytes).map(Some)
+}
+
+const OTHER_VERSION_SUFFIX: &str = "（另一台设备的版本）";
+
+fn keep_other_version(path: &Path, bytes: &[u8]) -> CommandResult<PathBuf> {
+    let dir = path.parent().ok_or_else(|| err("无效的路径"))?;
+    let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| BOARD_EXTENSION.into());
+    // Stay within name limits even for very long board names.
+    let stem = board_stem(path);
+    let base = format!("{}{OTHER_VERSION_SUFFIX}", truncate_bytes(&stem, MAX_NAME_BYTES - OTHER_VERSION_SUFFIX.len() - 8));
+    create_unique(dir, &base, Some(&ext), |target| create_atomic(target, bytes).map(|_| ()))
+}
+
+/// The longest prefix of `text` that fits in `max` UTF-8 bytes.
+fn truncate_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edits_made_elsewhere_are_kept_as_a_copy() {
+        let root = temp_vault("conflict");
+        let path = root.join("计划.mixnote");
+        fs::write(&path, "v1").unwrap();
+
+        // Unchanged since it was read (same bytes): nothing to keep.
+        assert_eq!(keep_if_different(&path, b"v1").unwrap(), None);
+
+        // Another Mac saved something else: it is kept beside ours.
+        fs::write(&path, "v2 from the other mac").unwrap();
+        let copy = keep_if_different(&path, b"ours").unwrap().unwrap();
+        assert_eq!(copy.file_name().unwrap().to_string_lossy(), "计划（另一台设备的版本）.mixnote");
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "v2 from the other mac");
+        let second = keep_if_different(&path, b"ours").unwrap().unwrap();
+        assert_eq!(second.file_name().unwrap().to_string_lossy(), "计划（另一台设备的版本） 2.mixnote");
+
+        // Very long names are shortened so the copy can still be created.
+        let long = root.join(format!("{}.mixnote", "长".repeat(66)));
+        fs::write(&long, "x").unwrap();
+        let copy = keep_if_different(&long, b"y").unwrap().unwrap();
+        assert!(copy.file_name().unwrap().len() <= MAX_NAME_BYTES + 20);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn versions_track_writes() {
+        let root = temp_vault("versions");
+        let path = root.join("a.mixnote");
+        let first = version_of(&write_atomic(&path, b"one").unwrap());
+        assert_eq!(first, version_of(&fs::metadata(&path).unwrap()), "the returned version is the file's");
+        let second = version_of(&write_atomic(&path, b"two, longer").unwrap());
+        assert_ne!(first, second);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn favorites_follow_renames_and_trash() {
@@ -853,6 +1106,7 @@ mod tests {
         assert!(refused("/Users/someone/Library/Application Support/MixNote"));
         assert!(refused("/Users/someone/Library/Mobile Documents"));
         assert!(!refused("/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/MixNote"));
+        assert!(refused("/Users/someone/Library/Mobile Documents/com~apple~CloudDocs"));
         assert!(!refused("/Users/someone/Documents/Notes"));
         assert!(!refused("/Users/someone/LibraryNotes"));
         assert!(!refused("/Volumes/Data/Notes"));

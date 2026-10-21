@@ -54,12 +54,16 @@ export class WebBridge implements PlatformBridge {
     return this.saveFile(data, defaultPath);
   }
 
-  async writeDocumentFile(): Promise<void> {
+  async writeDocumentFile(): Promise<{ version: string; otherVersion: string | null }> {
     // The web build only knows download names, never a writable path.
     throw new Error('Writing to a file path is not supported on the web');
   }
 
-  async readDocumentFile(): Promise<string> {
+  async documentChanged(): Promise<boolean> {
+    return false;
+  }
+
+  async readDocumentFile(): Promise<{ content: string; version: string }> {
     throw new Error('Reading a file path is not supported on the web');
   }
 

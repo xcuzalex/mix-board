@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
-import { loadImageToCache } from '../canvas/renderer';
+import { loadImageToCache, releaseImages } from '../canvas/renderer';
 import { getPlatform } from '../platform';
 import { useDocumentStore } from '../store/document';
-import { createDocument, type AppState, type EmbeddedFile } from '../types/document';
-import type { Element } from '../types/element';
 import { renderBoardThumbnail } from './document-io';
+import { parseBoardFile, type Board } from './board-format';
 
 // Library card previews. Boards are read from disk and drawn with the same
 // renderer as the canvas, one at a time, and cached per (path, modified time)
@@ -15,27 +14,12 @@ import { renderBoardThumbnail } from './document-io';
 const THUMB_WIDTH = 320;
 const THUMB_HEIGHT = 240;
 
-interface Board {
-  elements: Element[];
-  appState: AppState;
-  files: Record<string, EmbeddedFile>;
-}
-
 const cache = new Map<string, { key: string; url: string | null }>();
 let queue: Promise<unknown> = Promise.resolve();
 
 function parseBoard(json: string): Board | null {
-  try {
-    const doc = JSON.parse(json);
-    if (!doc || !Array.isArray(doc.elements)) return null;
-    return {
-      elements: doc.elements,
-      appState: { ...createDocument().appState, ...(doc.appState ?? {}) },
-      files: doc.files && typeof doc.files === 'object' ? doc.files : {},
-    };
-  } catch {
-    return null;
-  }
+  const parsed = parseBoardFile(json);
+  return parsed.ok ? parsed.board : null;
 }
 
 async function renderToUrl(board: Board): Promise<string | null> {
@@ -46,6 +30,10 @@ async function renderToUrl(board: Board): Promise<string | null> {
       .map((file) => loadImageToCache(file.id, file.dataURL).catch(() => undefined)),
   );
   const canvas = renderBoardThumbnail(board.elements, board.appState, THUMB_WIDTH, THUMB_HEIGHT);
+  // The image cache is shared with the canvas: let go of this board's images
+  // unless the open board uses them too.
+  const live = useDocumentStore.getState().files;
+  releaseImages(Object.keys(board.files).filter((id) => !(id in live)));
   if (!canvas) return null;
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
   return blob ? URL.createObjectURL(blob) : null;
@@ -82,7 +70,7 @@ function loadThumbnail(path: string, modified: number): Promise<string | null> {
   return enqueue(async () => {
     const again = cache.get(path);
     if (again?.key === key) return again.url;
-    const content = await (await getPlatform()).readDocumentFile(path);
+    const { content } = await (await getPlatform()).readDocumentFile(path);
     const board = parseBoard(content);
     const url = board ? await renderToUrl(board) : null;
     remember(path, key, url);

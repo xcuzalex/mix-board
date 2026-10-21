@@ -8,7 +8,8 @@ import { useVaultStore } from '../store/vault';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element } from '../types/element';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
-import { serializeDocument } from './document-io';
+import { getDocumentDisplayName, serializeDocument } from './document-io';
+import { parseFailureMessage } from './board-format';
 
 // Autosave only reads store snapshots: it never pushes history or touches
 // elements. The one write it makes is clearing `isDirty` after a silent save.
@@ -34,6 +35,8 @@ export type AutosaveStatus =
 export interface DocumentDraft {
   id: string;
   filePath: string | null;
+  /** File version the draft's content was based on (absent in older drafts). */
+  fileVersion?: string | null;
   savedAt: number;
   elementCount: number;
   data: string;
@@ -59,6 +62,7 @@ interface Snapshot {
   appState: AppState;
   files: Record<string, EmbeddedFile>;
   filePath: string | null;
+  fileVersion?: string | null;
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -79,8 +83,8 @@ function newSlotId() {
 let slotId = newSlotId();
 
 function takeSnapshot(): Snapshot {
-  const { elements, appState, files, filePath } = useDocumentStore.getState();
-  return { elements, appState, files, filePath };
+  const { elements, appState, files, filePath, fileVersion } = useDocumentStore.getState();
+  return { elements, appState, files, filePath, fileVersion };
 }
 
 export function isUnchangedSince(snapshot: Snapshot) {
@@ -135,6 +139,7 @@ function buildDraft(snapshot: Snapshot): DocumentDraft {
   return {
     id: slotId,
     filePath: snapshot.filePath,
+    fileVersion: snapshot.fileVersion ?? null,
     savedAt: Date.now(),
     elementCount: snapshot.elements.length,
     data: serializeDocument(snapshot.elements, snapshot.appState, snapshot.files),
@@ -184,13 +189,13 @@ async function createBoardInVault(snapshot: Snapshot) {
   const { vault, folder } = useVaultStore.getState();
   const platform = await getPlatform();
   if (!vault || !platform.vault) return null;
-  const path = await platform.vault.createBoard(
+  const created = await platform.vault.createBoard(
     folder,
     serializeDocument(snapshot.elements, snapshot.appState, snapshot.files),
   );
-  void platform.vault.setLastBoard(path).catch(() => undefined);
+  void platform.vault.setLastBoard(created.path).catch(() => undefined);
   void useVaultStore.getState().refreshEntries();
-  return path;
+  return created;
 }
 
 async function persist(snapshot: Snapshot) {
@@ -203,10 +208,11 @@ async function persist(snapshot: Snapshot) {
       return;
     }
     try {
-      const path = await createBoardInVault(snapshot);
-      if (path) {
+      const created = await createBoardInVault(snapshot);
+      if (created) {
         const unchanged = isUnchangedSince(snapshot);
-        useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
+        const file = { filePath: created.path, fileVersion: created.version };
+        useDocumentStore.setState(unchanged ? { ...file, isDirty: false } : file);
         useAutosaveStore.setState({
           status: unchanged ? 'saved' : 'dirty',
           lastSavedAt: Date.now(),
@@ -224,10 +230,21 @@ async function persist(snapshot: Snapshot) {
   if (isDesktop() && snapshot.filePath) {
     try {
       const platform = await getPlatform();
-      await platform.writeDocumentFile(
+      const written = await platform.writeDocumentFile(
         snapshot.filePath,
         serializeDocument(snapshot.elements, snapshot.appState, snapshot.files),
+        snapshot.fileVersion ?? null,
       );
+      // The content on screen is now based on the file as just written.
+      if (useDocumentStore.getState().filePath === snapshot.filePath) {
+        useDocumentStore.setState({ fileVersion: written.version });
+      }
+      if (written.otherVersion) {
+        // Edited on another Mac meanwhile: both versions are kept.
+        const name = getDocumentDisplayName(written.otherVersion);
+        useVaultStore.getState().setNotice(`这篇笔记在另一台设备上也被修改过，那个版本已另存为「${name}」`, 'info');
+        void useVaultStore.getState().refreshEntries();
+      }
       if (isUnchangedSince(snapshot)) {
         useDocumentStore.setState({ isDirty: false });
       }
@@ -361,11 +378,14 @@ export async function restoreDraft() {
   // Save what is open first; replacing it keeps its own draft recoverable.
   await settleDocument();
   const store = useDocumentStore.getState();
-  if (!store.loadDocument(draft.data)) {
-    useVaultStore.getState().setNotice('草稿已损坏，无法恢复');
+  const loaded = store.loadDocument(draft.data);
+  if (loaded !== true) {
+    useVaultStore.getState().setNotice(loaded === 'newer' ? `无法恢复草稿：${parseFailureMessage(loaded)}` : '草稿已损坏，无法恢复');
     return;
   }
-  store.setFilePath(draft.filePath);
+  // Based on the version the draft started from; older drafts don't know it
+  // (''), so saving keeps any different file on disk as a copy.
+  store.setFilePath(draft.filePath, draft.filePath ? (draft.fileVersion ?? '') : null);
   // Still unsaved: mark dirty so it is saved again (to its file, or as a draft).
   useDocumentStore.setState({ isDirty: true });
   await deleteDraft(draft.id);

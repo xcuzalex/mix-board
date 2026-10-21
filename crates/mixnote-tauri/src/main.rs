@@ -34,6 +34,8 @@ fn main() {
             vault::vault_trash,
             vault::read_document,
             vault::write_document,
+            vault::document_changed,
+            vault::vault_download,
             quit::quit_flush_done,
         ])
         .build(tauri::generate_context!())

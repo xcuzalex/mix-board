@@ -5,6 +5,8 @@ import { isPathInside, useVaultStore } from '../store/vault';
 import { flushAutosave, isUnchangedSince, settleDocument, useAutosaveStore } from './autosave';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { serializeDocument } from './document-io';
+import { parseFailureMessage } from './board-format';
+import { isTypingTarget } from '../canvas/clipboard';
 
 // Vault ("资料库") actions that touch the open document. They always finish
 // pending autosaves first, so a write can't land on a path that was just
@@ -85,14 +87,15 @@ async function applyStatus(status: VaultStatus) {
 async function saveUntitledIntoVault() {
   const snapshot = useDocumentStore.getState();
   const { elements, appState, files } = snapshot;
-  const path = await run((vault) =>
+  const created = await run((vault) =>
     vault.createBoard(useVaultStore.getState().folder, serializeDocument(elements, appState, files)),
   );
-  if (!path) return;
+  if (!created) return;
   // Edits made while the file was being created still need saving.
   const unchanged = isUnchangedSince({ elements, appState, files, filePath: snapshot.filePath });
-  useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
-  void getVault().then((vault) => vault?.setLastBoard(path).catch(() => undefined));
+  const file = { filePath: created.path, fileVersion: created.version };
+  useDocumentStore.setState(unchanged ? { ...file, isDirty: false } : file);
+  void getVault().then((vault) => vault?.setLastBoard(created.path).catch(() => undefined));
   await useVaultStore.getState().refreshEntries();
 }
 
@@ -101,10 +104,71 @@ export async function initVault() {
   if (!isDesktop()) return;
   const status = await run((vault) => vault.status());
   if (status) await applyStatus(status);
+  watchOpenBoard();
+}
+
+// --- The open board, changed on another Mac ---------------------------------
+
+/** How often the open board's file is checked while the window is in front. */
+const CHANGE_CHECK_MS = 10_000;
+let watching = false;
+let pointerHeld = false;
+let checking = false;
+
+/** Checks on focus and every few seconds while focused (iCloud can deliver late). Once per app. */
+function watchOpenBoard() {
+  if (watching) return;
+  watching = true;
+  window.addEventListener('focus', () => void reloadIfChangedElsewhere());
+  window.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
+  window.addEventListener('pointerup', () => { pointerHeld = false; }, true);
+  window.addEventListener('pointercancel', () => { pointerHeld = false; }, true);
+  window.setInterval(() => {
+    if (document.hasFocus()) void reloadIfChangedElsewhere();
+  }, CHANGE_CHECK_MS);
+}
+
+/**
+ * If the open board's file is no longer at the version on screen (another
+ * Mac saved it, via iCloud) and there are no local edits, show that version.
+ * With local edits, nothing happens here: the next save keeps both versions
+ * (see `writeDocumentFile`). Never interrupts typing or a drag in progress.
+ */
+export async function reloadIfChangedElsewhere() {
+  const { filePath, fileVersion, isDirty } = useDocumentStore.getState();
+  if (!filePath || !fileVersion || isDirty || checking || pointerHeld) return;
+  if (isTypingTarget(document.activeElement) || useAutosaveStore.getState().status === 'saving') return;
+  checking = true;
+  try {
+    const platform = await getPlatform();
+    if (!(await platform.documentChanged(filePath, fileVersion).catch(() => false))) return;
+    const read = await platform.readDocumentFile(filePath).catch(() => null);
+    if (!read) return;
+    const store = useDocumentStore.getState();
+    // Edited or switched boards while reading: leave it to the next save / check.
+    if (store.filePath !== filePath || store.fileVersion !== fileVersion || store.isDirty || pointerHeld) return;
+    const loaded = store.loadDocument(read.content);
+    if (loaded !== true) {
+      // Keep the old version as the base, so a later save still keeps theirs.
+      useVaultStore.getState().setNotice(`这篇笔记在其他设备上有新的修改，但无法载入：${parseFailureMessage(loaded)}`);
+      return;
+    }
+    store.setFilePath(filePath, read.version);
+    clearCanvasSelection();
+    useVaultStore.getState().setNotice('已载入这篇笔记在其他设备上的最新修改', 'info');
+  } finally {
+    checking = false;
+  }
 }
 
 export async function pickVaultFolder() {
   const status = await run((vault) => vault.pickFolder());
+  if (status) await applyStatus(status);
+}
+
+/** Any folder inside iCloud Drive (not only iCloud 云盘/MixNote) as the vault. */
+export async function pickICloudFolder() {
+  const status = await run((vault) => vault.pickFolder(true));
   if (status) await applyStatus(status);
 }
 
@@ -131,19 +195,20 @@ export async function chooseLocalDraftsOnly() {
 
 export async function openBoard(path: string) {
   await settleCurrentDocument();
-  let content: string;
+  let read: { content: string; version: string };
   try {
-    content = await (await getPlatform()).readDocumentFile(path);
+    read = await (await getPlatform()).readDocumentFile(path);
   } catch (err) {
     useVaultStore.getState().setNotice(`无法打开笔记：${errorMessage(err)}`);
     return;
   }
   const store = useDocumentStore.getState();
-  if (!store.loadDocument(content)) {
-    useVaultStore.getState().setNotice('无法打开笔记：文件已损坏或不是 MixNote 笔记');
+  const loaded = store.loadDocument(read.content);
+  if (loaded !== true) {
+    useVaultStore.getState().setNotice(`无法打开笔记：${parseFailureMessage(loaded)}`);
     return;
   }
-  store.setFilePath(path);
+  store.setFilePath(path, read.version);
   clearCanvasSelection();
   useVaultStore.getState().setLibraryOpen(false);
   if (isVaultBoard(path)) void run((vault) => vault.setLastBoard(path));
@@ -184,13 +249,13 @@ export async function createBoard(folder?: string | null) {
 
   const { elements, appState, files } = useDocumentStore.getState();
   const target = folder === undefined ? useVaultStore.getState().folder : folder;
-  const path = await run((vault) => vault.createBoard(target, serializeDocument(elements, appState, files)));
-  if (!path) return;
-  useDocumentStore.getState().setFilePath(path);
-  void run((vault) => vault.setLastBoard(path));
+  const created = await run((vault) => vault.createBoard(target, serializeDocument(elements, appState, files)));
+  if (!created) return;
+  useDocumentStore.getState().setFilePath(created.path, created.version);
+  void run((vault) => vault.setLastBoard(created.path));
   await useVaultStore.getState().refreshEntries();
   // Name it right away in the board's title field.
-  useVaultStore.getState().setRenamingPath(path);
+  useVaultStore.getState().setRenamingPath(created.path);
 }
 
 /** New folder in `parent` (default: the folder open in the library; null: the vault root). */
@@ -213,7 +278,9 @@ export async function renameEntry(path: string, name: string) {
   if (newPath !== path) {
     const latestPath = useDocumentStore.getState().filePath;
     if (latestPath && isPathInside(latestPath, path)) {
-      useDocumentStore.getState().setFilePath(newPath + latestPath.slice(path.length));
+      // A rename keeps the file's version (same bytes, same modification time).
+      const doc = useDocumentStore.getState();
+      doc.setFilePath(newPath + latestPath.slice(path.length), doc.fileVersion);
     }
     const { folder } = useVaultStore.getState();
     if (folder && isPathInside(folder, path)) {

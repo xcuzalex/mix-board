@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { useVaultStore } from '../store/vault';
-import { chooseLocalDraftsOnly, openICloudVault, openRecentVault, pickVaultFolder } from '../utils/vault';
+import { chooseLocalDraftsOnly, openICloudVault, openRecentVault, pickICloudFolder, pickVaultFolder } from '../utils/vault';
 
 function Choice({
   icon,
@@ -85,6 +85,14 @@ export function VaultWelcome() {
               </svg>
             )}
           />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={choose(pickICloudFolder)}
+            className="-mt-1 self-start px-1 text-[12px] text-[#007aff] hover:underline disabled:opacity-50 dark:text-[#4aa8ff]"
+          >
+            或选择 iCloud 云盘中的其他文件夹…
+          </button>
           <Choice
             disabled={busy}
             onClick={choose(pickVaultFolder)}

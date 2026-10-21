@@ -29,9 +29,10 @@ import {
   CARD_PADDING,
   DEFAULT_NOTE_FONT,
   type LinkHit,
+  type TaskHit,
 } from './render/markdown';
-import { drawCode, drawKanban, drawMatrix, drawTable } from './render/structured';
-import { kanbanHeight } from './structured';
+import { drawCode, drawKanban, drawMatrix, drawTable, type SlotTaskHit } from './render/structured';
+import { kanbanHeight, type EditSlot } from './structured';
 import {
   type Rect,
   getLayoutBounds,
@@ -100,6 +101,14 @@ export function clearImageCache() {
 /** Whether an image is decoded in the cache or currently loading. */
 export function isImageCachedOrLoading(fileId: string): boolean {
   return imageCache.has(fileId) || pendingImageLoads.has(fileId);
+}
+
+/** Drops specific images from the cache (e.g. after drawing another board's thumbnail). */
+export function releaseImages(fileIds: Iterable<string>) {
+  for (const id of fileIds) {
+    imageCache.delete(id);
+    pendingImageLoads.delete(id);
+  }
 }
 
 /** Evicts cached (and in-flight) images whose file id is not in `fileIds`. */
@@ -249,8 +258,12 @@ export class Renderer {
   private rough: RoughCanvas;
   /** [[link]] hit regions collected during the scene pass, in canvas coords. */
   private linkHits: Array<{ elementId: string } & LinkHit> = [];
+  /** Todo checkbox regions (slot set for cells / cards / quadrant notes). */
+  private taskHits: Array<{ elementId: string; slot?: EditSlot } & TaskHit> = [];
   /** Draw the dot-grid backdrop behind the scene (off for image export). */
   backgroundDots = true;
+  /** Draw editing hints ("添加卡片", "双击输入…"); off for image export / thumbnails. */
+  editingHints = true;
 
   constructor(ctx: CanvasRenderingContext2D, viewport: Viewport) {
     this.ctx = ctx;
@@ -279,6 +292,17 @@ export class Renderer {
       const h = this.linkHits[i];
       if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
         return { elementId: h.elementId, name: h.name };
+      }
+    }
+    return null;
+  }
+
+  /** Returns the todo checkbox at a canvas-space point, if any (from the last scene pass). */
+  getTaskAtPoint(x: number, y: number): { elementId: string; slot?: EditSlot; line: number } | null {
+    for (let i = this.taskHits.length - 1; i >= 0; i -= 1) {
+      const h = this.taskHits[i];
+      if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
+        return { elementId: h.elementId, slot: h.slot, line: h.line };
       }
     }
     return null;
@@ -575,6 +599,7 @@ export class Renderer {
     this.refreshTextLayoutCachesIfNeeded();
     this.sceneIndex = this.getSceneIndex(elements);
     this.linkHits = [];
+    this.taskHits = [];
     this.selectedMindmapNode = null;
     this.editingElementId = editingElementId ?? null;
     this.editingMindmapNodeId = editingMindmapNodeId ?? null;
@@ -843,17 +868,19 @@ export class Renderer {
         this.renderFrame(el);
         break;
       case 'table':
-      case 'kanban': {
-        // Cells and cards are Markdown: collect their [[link]] regions.
+      case 'kanban':
+      case 'matrix': {
+        // Cells, cards and quadrant notes are Markdown: collect their
+        // [[link]] and todo checkbox regions.
         const hits: LinkHit[] = [];
-        if (el.type === 'table') drawTable(ctx, el, hits);
-        else drawKanban(ctx, el, hits);
+        const tasks: SlotTaskHit[] = [];
+        if (el.type === 'table') drawTable(ctx, el, hits, tasks);
+        else if (el.type === 'kanban') drawKanban(ctx, el, hits, tasks, this.editingHints);
+        else drawMatrix(ctx, el, hits, tasks, this.editingHints);
         for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
+        for (const task of tasks) this.taskHits.push({ elementId: el.id, ...task });
         break;
       }
-      case 'matrix':
-        drawMatrix(ctx, el);
-        break;
       case 'code':
         drawCode(ctx, el);
         break;
@@ -946,6 +973,7 @@ export class Renderer {
     // kept). Centered / right-aligned text keeps the plain renderer.
     if ((el.textAlign ?? 'left') === 'left') {
       const hits: LinkHit[] = [];
+      const tasks: TaskHit[] = [];
       drawMarkdown(ctx, el.text, {
         x: el.x,
         y: el.y,
@@ -953,8 +981,9 @@ export class Renderer {
         fontSize: el.fontSize,
         fontFamily: el.fontFamily,
         color: el.strokeColor,
-      }, hits);
+      }, hits, tasks);
       for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
+      for (const task of tasks) this.taskHits.push({ elementId: el.id, ...task });
       return;
     }
 
@@ -1032,6 +1061,7 @@ export class Renderer {
     if (el.text && this.editingElementId !== el.id) {
       ctx.textAlign = 'left';
       const hits: LinkHit[] = [];
+      const tasks: TaskHit[] = [];
       drawMarkdown(ctx, el.text, {
         x: el.x + CARD_PADDING,
         y: el.y + CARD_PADDING,
@@ -1039,8 +1069,9 @@ export class Renderer {
         fontSize: el.fontSize ?? 16,
         fontFamily: el.fontFamily ?? DEFAULT_NOTE_FONT,
         color: '#1B1B1F',
-      }, hits);
+      }, hits, tasks);
       for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
+      for (const task of tasks) this.taskHits.push({ elementId: el.id, ...task });
     }
 
     // Author display (bottom left)
