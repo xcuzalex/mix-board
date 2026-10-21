@@ -4,7 +4,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
-import { useAutosaveStore, type AutosaveStatus } from '../utils/autosave';
+import { settleDocument, useAutosaveStore, type AutosaveStatus } from '../utils/autosave';
+import { useVaultStore } from '../store/vault';
 import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
 import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
 import { createBoard, openBoard, openLibrary, pickVaultFolder } from '../utils/vault';
@@ -88,9 +89,13 @@ export function TopBar() {
       return;
     }
     const result = await platform.openFile();
-    if (result) {
-      loadDocument(result.content);
+    if (!result) return;
+    // Save the current board first; replacing it keeps its draft recoverable.
+    await settleDocument();
+    if (loadDocument(result.content)) {
       setFilePath(result.path);
+    } else {
+      useVaultStore.getState().setNotice('无法打开：文件已损坏或不是 MixNote 画板');
     }
   };
 

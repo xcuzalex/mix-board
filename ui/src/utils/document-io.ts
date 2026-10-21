@@ -6,7 +6,8 @@ import { useDocumentStore } from '../store/document';
 import { useVaultStore } from '../store/vault';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element, LinearElement, MindmapElement } from '../types/element';
-import { saveToDocumentFile } from './autosave';
+import { isUnchangedSince, saveToDocumentFile } from './autosave';
+import { canvasTheme, isDefaultBackground } from '../canvas/canvas-theme';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
 import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
@@ -43,14 +44,21 @@ export function serializeDocument(
   appState: AppState,
   files: Record<string, EmbeddedFile>,
 ) {
-  return JSON.stringify({
+  // Only images still on the board are written; deleted ones drop out of the file.
+  const usedFiles: Record<string, EmbeddedFile> = {};
+  for (const el of elements) {
+    if (el.type === 'image' && files[el.fileId]) usedFiles[el.fileId] = files[el.fileId];
+  }
+  const doc = {
     type: 'mixnote',
     version: 1,
     source: 'MixNote/0.1.0',
     elements,
     appState,
-    files,
-  }, null, 2);
+    files: usedFiles,
+  };
+  // Pretty-print text-only boards (readable, diffable); keep image boards compact.
+  return Object.keys(usedFiles).length > 0 ? JSON.stringify(doc) : JSON.stringify(doc, null, 2);
 }
 
 function getFileName(path: string | null | undefined, fallback: string) {
@@ -134,7 +142,9 @@ export async function saveCurrentDocument() {
   );
 
   if (path) {
-    useDocumentStore.setState({ filePath: path, isDirty: false });
+    // Edits made while the dialog was open still need saving.
+    const unchanged = isUnchangedSince({ elements, appState, files, filePath });
+    useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
   }
 
   return path;
@@ -154,7 +164,11 @@ export async function exportCurrentBoardAsMarkdown() {
 export async function exportCurrentBoardAsImage() {
   flushPendingCanvasInteractionState();
   const { elements, appState, filePath } = useDocumentStore.getState();
-  const canvas = createExportCanvas(elements, appState.viewBackgroundColor);
+  // Match the screen: the default page colour follows the current theme.
+  const background = isDefaultBackground(appState.viewBackgroundColor)
+    ? canvasTheme.background
+    : appState.viewBackgroundColor;
+  const canvas = createExportCanvas(elements, background);
   if (!canvas) return null;
 
   const platform = await getPlatform();

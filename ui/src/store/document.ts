@@ -4,6 +4,7 @@ import type { Element } from "../types/element";
 import type { AppState, EmbeddedFile } from "../types/document";
 import { createDocument } from "../types/document";
 import { generateId } from "../utils/id";
+import { cloneElementsWithNewIds } from "../utils/clone-elements";
 import { queueHydrateEmbeddedFiles } from "../utils/embedded-files";
 
 interface HistoryEntry {
@@ -34,11 +35,9 @@ interface DocumentStore {
   addElement: (element: Element) => void;
   removeElements: (ids: string[]) => void;
   updateElement: (id: string, updates: Partial<Element>) => void;
-  moveElements: (ids: string[], dx: number, dy: number) => void;
-  setElements: (elements: Element[]) => void;
   addEmbeddedFile: (file: EmbeddedFile) => void;
-  removeEmbeddedFile: (id: string) => void;
-  loadDocument: (json: string) => void;
+  /** Replaces the document; returns false (leaving it untouched) if `json` isn't a board. */
+  loadDocument: (json: string) => boolean;
   newDocument: () => void;
   setFilePath: (path: string | null) => void;
   applyTransaction: (
@@ -70,24 +69,42 @@ interface DocumentStore {
   duplicateElements: (ids: string[]) => string[];
 
   // History actions
+  /**
+   * Marks the current state as an undo checkpoint. It is recorded only once
+   * the document actually changes, so gestures that end up changing nothing
+   * (a click, an edit left unchanged) add no undo step and keep redo intact.
+   */
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
-
-  // App state
-  setAppState: (updates: Partial<AppState>) => void;
 }
 
 const MAX_HISTORY = 100;
 
-function cloneHistoryEntry(
+// Store state is immutable (Immer freezes it), so history entries can share it
+// by reference instead of deep-copying every element and embedded image.
+function snapshotOf(
   state: Pick<DocumentStore, "elements" | "appState" | "files">,
 ): HistoryEntry {
-  return {
-    elements: structuredClone(state.elements),
-    appState: structuredClone(state.appState),
-    files: structuredClone(state.files),
-  };
+  return { elements: state.elements, appState: state.appState, files: state.files };
+}
+
+/** Checkpoint waiting for the first real change (see `pushHistory`). */
+let pendingCheckpoint: HistoryEntry | null = null;
+
+function parseBoard(json: string): { elements: Element[]; appState: AppState; files: Record<string, EmbeddedFile> } | null {
+  try {
+    const doc = JSON.parse(json);
+    const knownType = doc?.type === undefined || doc.type === "mixnote" || doc.type === "mixboard";
+    if (!doc || typeof doc !== "object" || !knownType || !Array.isArray(doc.elements)) return null;
+    return {
+      elements: doc.elements,
+      appState: { ...createDocument().appState, ...(doc.appState ?? {}) },
+      files: doc.files && typeof doc.files === "object" ? doc.files : {},
+    };
+  } catch {
+    return null;
+  }
 }
 
 export const useDocumentStore = create<DocumentStore>()(
@@ -124,55 +141,30 @@ export const useDocumentStore = create<DocumentStore>()(
         }
       }),
 
-    moveElements: (ids, dx, dy) =>
-      set((state) => {
-        const idSet = new Set(ids);
-        for (const el of state.elements) {
-          if (idSet.has(el.id)) {
-            el.x += dx;
-            el.y += dy;
-            el.updatedAt = Date.now();
-          }
-        }
-        state.isDirty = true;
-      }),
-
-    setElements: (elements) =>
-      set((state) => {
-        state.elements = elements;
-        state.isDirty = true;
-      }),
-
     addEmbeddedFile: (file) =>
       set((state) => {
         state.files[file.id] = file;
         state.isDirty = true;
       }),
 
-    removeEmbeddedFile: (id) =>
+    loadDocument: (json) => {
+      const board = parseBoard(json);
+      if (!board) return false;
+      pendingCheckpoint = null;
       set((state) => {
-        delete state.files[id];
-        state.isDirty = true;
-      }),
+        state.elements = board.elements;
+        state.appState = board.appState;
+        state.files = board.files;
+        state.isDirty = false;
+        state.undoStack = [];
+        state.redoStack = [];
+      });
+      queueHydrateEmbeddedFiles(board.files);
+      return true;
+    },
 
-    loadDocument: (json) =>
-      set((state) => {
-        try {
-          const doc = JSON.parse(json);
-          const files = structuredClone(doc.files || {});
-          state.elements = doc.elements || [];
-          state.appState = doc.appState || createDocument().appState;
-          state.files = files;
-          state.isDirty = false;
-          state.undoStack = [];
-          state.redoStack = [];
-          queueHydrateEmbeddedFiles(files);
-        } catch {
-          console.error("Failed to load document");
-        }
-      }),
-
-    newDocument: () =>
+    newDocument: () => {
+      pendingCheckpoint = null;
       set((state) => {
         const doc = createDocument();
         state.elements = doc.elements;
@@ -183,7 +175,8 @@ export const useDocumentStore = create<DocumentStore>()(
         state.undoStack = [];
         state.redoStack = [];
         queueHydrateEmbeddedFiles(doc.files);
-      }),
+      });
+    },
 
     setFilePath: (path) =>
       set((state) => {
@@ -371,40 +364,24 @@ export const useDocumentStore = create<DocumentStore>()(
 
     // Duplicate
     duplicateElements: (ids) => {
-      const newIds: string[] = [];
+      const idSet = new Set(ids);
+      const copies = cloneElementsWithNewIds(get().elements.filter((e) => idSet.has(e.id)), 20);
       set((state) => {
-        for (const id of ids) {
-          const el = state.elements.find((e) => e.id === id);
-          if (!el) continue;
-          const newId = generateId();
-          newIds.push(newId);
-          const cloned = structuredClone(el);
-          cloned.id = newId;
-          cloned.x += 20;
-          cloned.y += 20;
-          cloned.createdAt = Date.now();
-          cloned.updatedAt = Date.now();
-          state.elements.push(cloned);
-        }
+        state.elements.push(...copies);
         state.isDirty = true;
       });
-      return newIds;
+      return copies.map((el) => el.id);
     },
 
-    pushHistory: () =>
-      set((state) => {
-        const entry = cloneHistoryEntry(get());
-        state.undoStack.push(entry);
-        if (state.undoStack.length > MAX_HISTORY) {
-          state.undoStack.shift();
-        }
-        state.redoStack = [];
-      }),
+    pushHistory: () => {
+      pendingCheckpoint = snapshotOf(get());
+    },
 
     undo: () => {
+      pendingCheckpoint = null;
       const { undoStack } = get();
       if (undoStack.length === 0) return;
-      const currentEntry = cloneHistoryEntry(get());
+      const currentEntry = snapshotOf(get());
       set((state) => {
         const entry = state.undoStack.pop()!;
         state.redoStack.push(currentEntry);
@@ -417,9 +394,10 @@ export const useDocumentStore = create<DocumentStore>()(
     },
 
     redo: () => {
+      pendingCheckpoint = null;
       const { redoStack } = get();
       if (redoStack.length === 0) return;
-      const currentEntry = cloneHistoryEntry(get());
+      const currentEntry = snapshotOf(get());
       set((state) => {
         const entry = state.redoStack.pop()!;
         state.undoStack.push(currentEntry);
@@ -431,24 +409,27 @@ export const useDocumentStore = create<DocumentStore>()(
       });
     },
 
-    setAppState: (updates) =>
+    applyTransaction: (recipe, options) => {
+      if (options?.pushHistory) pendingCheckpoint = snapshotOf(get());
       set((state) => {
-        Object.assign(state.appState, updates);
-      }),
-
-    applyTransaction: (recipe, options) =>
-      set((state) => {
-        if (options?.pushHistory) {
-          state.undoStack.push(cloneHistoryEntry(get()));
-          if (state.undoStack.length > MAX_HISTORY) {
-            state.undoStack.shift();
-          }
-          state.redoStack = [];
-        }
         recipe(state as unknown as DocumentTransactionDraft);
         if (options?.markDirty ?? true) {
           state.isDirty = true;
         }
-      }),
+      });
+    },
   })),
 );
+
+// Record a pending checkpoint the moment the document content first changes.
+useDocumentStore.subscribe((state, prev) => {
+  if (!pendingCheckpoint) return;
+  if (state.elements === prev.elements && state.appState === prev.appState && state.files === prev.files) return;
+  const entry = pendingCheckpoint;
+  pendingCheckpoint = null;
+  useDocumentStore.setState((draft) => {
+    draft.undoStack.push(entry);
+    if (draft.undoStack.length > MAX_HISTORY) draft.undoStack.shift();
+    draft.redoStack = [];
+  });
+});

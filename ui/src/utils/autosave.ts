@@ -18,8 +18,8 @@ const AUTOSAVE_DELAY_MS = 1500;
 const DB_NAME = 'mixboard';
 const DB_VERSION = 1;
 const DRAFT_STORE = 'drafts';
-// One window, one document: a single draft slot is enough.
-const DRAFT_KEY = 'current';
+// Drafts older than this are dropped at startup instead of offered.
+const DRAFT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // Sent by the Rust side before quitting; answered with `quit_flush_done`.
 const QUIT_FLUSH_EVENT = 'mixnote-flush-before-quit';
 
@@ -43,7 +43,7 @@ interface AutosaveState {
   status: AutosaveStatus;
   lastSavedAt: number | null;
   error: string | null;
-  /** Draft found at startup, waiting for the user to restore or discard it. */
+  /** A draft left by an earlier document session, offered for restore. */
   pendingDraft: DocumentDraft | null;
 }
 
@@ -66,14 +66,24 @@ let pendingChange = false;
 let queue: Promise<void> = Promise.resolve();
 let db: IDBDatabase | null = null;
 let dbPromise: Promise<IDBDatabase | null> | null = null;
-let draftCheck: Promise<void> | null = null;
+
+/**
+ * Each open document writes its draft to its own slot. Replacing the document
+ * (open, new board, restore) starts a fresh slot, so the previous document's
+ * draft stays behind and is offered again at the next launch instead of being
+ * overwritten or deleted. A slot is only deleted once its document is saved.
+ */
+function newSlotId() {
+  return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+let slotId = newSlotId();
 
 function takeSnapshot(): Snapshot {
   const { elements, appState, files, filePath } = useDocumentStore.getState();
   return { elements, appState, files, filePath };
 }
 
-function isUnchangedSince(snapshot: Snapshot) {
+export function isUnchangedSince(snapshot: Snapshot) {
   const state = useDocumentStore.getState();
   return state.elements === snapshot.elements
     && state.appState === snapshot.appState
@@ -123,7 +133,7 @@ async function draftRequest<T>(
 
 function buildDraft(snapshot: Snapshot): DocumentDraft {
   return {
-    id: DRAFT_KEY,
+    id: slotId,
     filePath: snapshot.filePath,
     savedAt: Date.now(),
     elementCount: snapshot.elements.length,
@@ -135,22 +145,33 @@ function writeDraft(draft: DocumentDraft) {
   return draftRequest('readwrite', (store) => store.put(draft));
 }
 
-function deleteDraft() {
-  return draftRequest('readwrite', (store) => store.delete(DRAFT_KEY)).catch(() => undefined);
+function deleteDraft(id: string) {
+  return draftRequest('readwrite', (store) => store.delete(id)).catch(() => undefined);
 }
 
-function checkForDraft() {
-  draftCheck ??= draftRequest<DocumentDraft | undefined>('readonly', (store) => store.get(DRAFT_KEY))
-    .then((draft) => {
-      if (!draft) return;
-      if (draft.elementCount === 0) {
-        void deleteDraft();
-        return;
-      }
-      useAutosaveStore.setState({ pendingDraft: draft });
-    })
-    .catch(() => undefined);
-  return draftCheck;
+/**
+ * Offers the newest draft left by another document session (empty and stale
+ * ones are cleaned up). Called at startup and after each restore/discard.
+ */
+export async function refreshPendingDraft() {
+  let drafts: DocumentDraft[];
+  try {
+    drafts = await draftRequest<DocumentDraft[]>('readonly', (store) => store.getAll());
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  const offered: DocumentDraft[] = [];
+  for (const draft of drafts) {
+    if (draft.id === slotId) continue;
+    if (draft.elementCount === 0 || now - draft.savedAt > DRAFT_MAX_AGE_MS) {
+      void deleteDraft(draft.id);
+    } else {
+      offered.push(draft);
+    }
+  }
+  offered.sort((a, b) => b.savedAt - a.savedAt);
+  useAutosaveStore.setState({ pendingDraft: offered[0] ?? null });
 }
 
 // --- Saving ---
@@ -195,10 +216,7 @@ async function persist(snapshot: Snapshot) {
       }
     } catch (err) {
       useAutosaveStore.setState({ status: 'error', error: errorMessage(err) });
-      await checkForDraft();
-      if (!useAutosaveStore.getState().pendingDraft) {
-        await writeDraft(buildDraft(snapshot)).catch(() => undefined);
-      }
+      await writeDraft(buildDraft(snapshot)).catch(() => undefined);
       return;
     }
   }
@@ -223,19 +241,9 @@ async function persist(snapshot: Snapshot) {
     } catch (err) {
       useAutosaveStore.setState({ status: 'error', error: errorMessage(err) });
       // Keep the edit recoverable even though the file write failed.
-      await checkForDraft();
-      if (!useAutosaveStore.getState().pendingDraft) {
-        await writeDraft(buildDraft(snapshot)).catch(() => undefined);
-      }
+      await writeDraft(buildDraft(snapshot)).catch(() => undefined);
       return;
     }
-  }
-
-  await checkForDraft();
-  if (useAutosaveStore.getState().pendingDraft) {
-    // Don't overwrite a draft the user hasn't decided about yet.
-    useAutosaveStore.setState({ status: 'dirty' });
-    return;
   }
 
   try {
@@ -302,7 +310,7 @@ export function saveToDocumentFile() {
 function flushDraftOnUnload() {
   if (!pendingChange && useAutosaveStore.getState().status !== 'saving') return false;
   cancelTimer();
-  if (pendingChange && db && !useAutosaveStore.getState().pendingDraft) {
+  if (pendingChange && db) {
     pendingChange = false;
     db.transaction(DRAFT_STORE, 'readwrite').objectStore(DRAFT_STORE).put(buildDraft(takeSnapshot()));
   }
@@ -313,22 +321,25 @@ function onDocumentChange(
   state: ReturnType<typeof useDocumentStore.getState>,
   prev: ReturnType<typeof useDocumentStore.getState>,
 ) {
-  const changed = state.elements !== prev.elements
+  const contentChanged = state.elements !== prev.elements
     || state.appState !== prev.appState
-    || state.files !== prev.files
-    || state.filePath !== prev.filePath;
+    || state.files !== prev.files;
+  const changed = contentChanged || state.filePath !== prev.filePath;
 
   if (!state.isDirty) {
-    if (prev.isDirty) {
-      // Saved by hand, or replaced by open/new: nothing left to recover.
+    if (contentChanged) {
+      // Replaced by open/new/restore. Whatever the previous document left in
+      // its slot stays there (offered at next launch); start a fresh slot.
       cancelTimer();
       pendingChange = false;
-      if (!useAutosaveStore.getState().pendingDraft) void deleteDraft();
-      if (changed) {
-        useAutosaveStore.setState({ status: 'idle', error: null });
-      } else {
-        useAutosaveStore.setState({ status: 'saved', lastSavedAt: Date.now(), error: null });
-      }
+      slotId = newSlotId();
+      useAutosaveStore.setState({ status: 'idle', error: null });
+    } else if (prev.isDirty) {
+      // Saved to its file: its draft is no longer needed.
+      cancelTimer();
+      pendingChange = false;
+      void deleteDraft(slotId);
+      useAutosaveStore.setState({ status: 'saved', lastSavedAt: Date.now(), error: null });
     }
     return;
   }
@@ -338,24 +349,35 @@ function onDocumentChange(
 
 // --- Draft restore ---
 
-export function restoreDraft() {
+/** Commits in-progress canvas edits and writes pending changes now. */
+export async function settleDocument() {
+  flushPendingCanvasInteractionState();
+  await flushAutosave();
+}
+
+export async function restoreDraft() {
   const draft = useAutosaveStore.getState().pendingDraft;
   if (!draft) return;
+  // Save what is open first; replacing it keeps its own draft recoverable.
+  await settleDocument();
   const store = useDocumentStore.getState();
-  store.loadDocument(draft.data);
+  if (!store.loadDocument(draft.data)) {
+    useVaultStore.getState().setNotice('草稿已损坏，无法恢复');
+    return;
+  }
   store.setFilePath(draft.filePath);
   // Still unsaved: mark dirty so it is saved again (to its file, or as a draft).
   useDocumentStore.setState({ isDirty: true });
-  useAutosaveStore.setState({ pendingDraft: null });
+  await deleteDraft(draft.id);
+  await refreshPendingDraft();
 }
 
-export function discardDraft() {
-  if (!useAutosaveStore.getState().pendingDraft) return;
+export async function discardDraft() {
+  const draft = useAutosaveStore.getState().pendingDraft;
+  if (!draft) return;
   useAutosaveStore.setState({ pendingDraft: null });
-  void deleteDraft().then(() => {
-    // Edits made while the prompt was open still need a draft.
-    if (useDocumentStore.getState().isDirty) schedule();
-  });
+  await deleteDraft(draft.id);
+  await refreshPendingDraft();
 }
 
 // --- Lifecycle ---
@@ -363,7 +385,7 @@ export function discardDraft() {
 /** Starts autosave; returns a cleanup function. Call once from the app root. */
 export function startAutosave() {
   const unsubscribe = useDocumentStore.subscribe(onDocumentChange);
-  void checkForDraft();
+  void refreshPendingDraft();
 
   const cleanups: Array<() => void> = [unsubscribe];
 
@@ -377,16 +399,14 @@ export function startAutosave() {
     // Tauri awaits this handler before destroying the window.
     void getCurrentWindow()
       .onCloseRequested(async () => {
-        await flushAutosave();
+        await settleDocument();
       })
       .then(keep);
     // Cmd+Q never closes the window, so the Rust side asks for a flush and
     // holds the exit until we answer (or its timeout passes).
     void listen(QUIT_FLUSH_EVENT, async () => {
       try {
-        // Commit an in-progress text edit so it is part of the save.
-        flushPendingCanvasInteractionState();
-        await flushAutosave();
+        await settleDocument();
       } finally {
         await invoke('quit_flush_done');
       }
@@ -397,6 +417,8 @@ export function startAutosave() {
     });
   } else {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      // Commit an in-progress text edit so it lands in the draft.
+      flushPendingCanvasInteractionState();
       if (flushDraftOnUnload()) {
         // Ask the browser to confirm, which also gives the write time to land.
         event.preventDefault();
@@ -404,7 +426,7 @@ export function startAutosave() {
       }
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') void flushAutosave();
+      if (document.visibilityState === 'hidden') void settleDocument();
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     document.addEventListener('visibilitychange', handleVisibilityChange);

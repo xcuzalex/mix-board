@@ -2,7 +2,7 @@ import { getPlatform, isDesktop, type VaultBridge, type VaultStatus } from '../p
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { isPathInside, useVaultStore } from '../store/vault';
-import { flushAutosave } from './autosave';
+import { flushAutosave, isUnchangedSince, settleDocument, useAutosaveStore } from './autosave';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { serializeDocument } from './document-io';
 
@@ -30,8 +30,11 @@ async function run<T>(action: (vault: VaultBridge) => Promise<T>): Promise<T | n
 }
 
 async function settleCurrentDocument() {
-  flushPendingCanvasInteractionState();
-  await flushAutosave();
+  await settleDocument();
+  if (useAutosaveStore.getState().status === 'error') {
+    // The board is about to be replaced; its edits survive as a local draft.
+    useVaultStore.getState().setNotice('上一个画板没能写入文件，修改已保存为本机草稿，下次启动时可恢复');
+  }
 }
 
 function clearCanvasSelection() {
@@ -80,12 +83,15 @@ async function applyStatus(status: VaultStatus) {
 }
 
 async function saveUntitledIntoVault() {
-  const { elements, appState, files } = useDocumentStore.getState();
+  const snapshot = useDocumentStore.getState();
+  const { elements, appState, files } = snapshot;
   const path = await run((vault) =>
     vault.createBoard(useVaultStore.getState().folder, serializeDocument(elements, appState, files)),
   );
   if (!path) return;
-  useDocumentStore.setState({ filePath: path, isDirty: false });
+  // Edits made while the file was being created still need saving.
+  const unchanged = isUnchangedSince({ elements, appState, files, filePath: snapshot.filePath });
+  useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
   void getVault().then((vault) => vault?.setLastBoard(path).catch(() => undefined));
   await useVaultStore.getState().refreshEntries();
 }
@@ -133,7 +139,10 @@ export async function openBoard(path: string) {
     return;
   }
   const store = useDocumentStore.getState();
-  store.loadDocument(content);
+  if (!store.loadDocument(content)) {
+    useVaultStore.getState().setNotice('无法打开画板：文件已损坏或不是 MixNote 画板');
+    return;
+  }
   store.setFilePath(path);
   clearCanvasSelection();
   useVaultStore.getState().setLibraryOpen(false);

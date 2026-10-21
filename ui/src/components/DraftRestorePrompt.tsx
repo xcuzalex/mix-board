@@ -31,14 +31,14 @@ export function DraftRestorePrompt() {
         </span>
         <button
           type="button"
-          onClick={discardDraft}
+          onClick={() => void discardDraft()}
           className="shrink-0 rounded-lg px-2.5 py-1 font-medium text-slate-500 hover:bg-black/[0.05] hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
         >
           丢弃
         </button>
         <button
           type="button"
-          onClick={restoreDraft}
+          onClick={() => void restoreDraft()}
           className="shrink-0 rounded-lg bg-sky-500 px-3 py-1 font-medium text-white hover:bg-sky-600"
         >
           恢复
