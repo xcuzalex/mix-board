@@ -3,8 +3,10 @@ import { Renderer } from '../canvas/renderer';
 import { Viewport } from '../canvas/viewport';
 import { getPlatform } from '../platform';
 import { useDocumentStore } from '../store/document';
+import { useVaultStore } from '../store/vault';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element, LinearElement, MindmapElement } from '../types/element';
+import { saveNow } from './autosave';
 import { flushPendingCanvasInteractionState } from './canvas-interaction-flush';
 import { boardToMarkdown } from './markdown-export';
 import { getLayoutBounds, layoutMindmapNodes, measureMindmapNodeWith } from '../canvas/render/mindmap-layout';
@@ -120,6 +122,11 @@ export async function saveCurrentDocument() {
   flushPendingCanvasInteractionState();
   const { elements, appState, files, filePath } = useDocumentStore.getState();
   const platform = await getPlatform();
+  if (platform.isDesktop() && (filePath || useVaultStore.getState().vault)) {
+    // Boards with a file (or a vault to land in) save in place: no dialog.
+    await saveNow();
+    return useDocumentStore.getState().filePath;
+  }
   const path = await platform.saveFile(
     serializeDocument(elements, appState, files),
     getSuggestedDocumentPath(filePath),

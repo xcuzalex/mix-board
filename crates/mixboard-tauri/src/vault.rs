@@ -1,0 +1,646 @@
+//! The vault ("资料库"): one user-chosen folder holding every board as a
+//! `*.mixboard` file. The webview never gets a free-form path into this
+//! module: a vault root is only set from the native folder picker, the iCloud
+//! folder, or the recent list kept here, and every file command checks that its
+//! target lies inside the open vault. Opening a vault also grants the fs plugin
+//! scope for that folder only, so autosave can write boards with `writeTextFile`.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, Runtime, State};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_fs::FsExt;
+
+const CONFIG_FILE: &str = "vaults.json";
+const BOARD_EXTENSION: &str = "mixboard";
+const ICLOUD_PLACEHOLDER_SUFFIX: &str = ".icloud";
+const MAX_RECENT: usize = 8;
+const MAX_DEPTH: usize = 12;
+const UNTITLED_BOARD: &str = "未命名";
+const UNTITLED_FOLDER: &str = "新建文件夹";
+/// Per-vault metadata folder; it travels (and syncs) with the vault.
+const META_DIR: &str = ".mixboard";
+const FAVORITES_FILE: &str = "favorites.json";
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultConfig {
+    #[serde(default)]
+    current: Option<PathBuf>,
+    #[serde(default)]
+    recent: Vec<PathBuf>,
+    /// The user picked "只用本机草稿" on the welcome screen.
+    #[serde(default)]
+    local_only: bool,
+    /// Last board opened in each vault, keyed by vault path.
+    #[serde(default)]
+    last_boards: BTreeMap<PathBuf, PathBuf>,
+}
+
+pub struct VaultState {
+    config_path: Option<PathBuf>,
+    config: Mutex<VaultConfig>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultInfo {
+    path: String,
+    name: String,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultStatus {
+    current: Option<VaultInfo>,
+    recent: Vec<VaultInfo>,
+    needs_welcome: bool,
+    last_board: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultEntry {
+    path: String,
+    parent: String,
+    name: String,
+    kind: &'static str,
+    /// Milliseconds since the Unix epoch.
+    modified: u64,
+    /// False for iCloud placeholders that haven't been downloaded yet.
+    downloaded: bool,
+    /// Starred in the library (stored in `<vault>/.mixboard/favorites.json`).
+    favorite: bool,
+}
+
+type CommandResult<T> = Result<T, String>;
+
+fn err(message: impl std::fmt::Display) -> String {
+    message.to_string()
+}
+
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn vault_info(path: &Path) -> VaultInfo {
+    VaultInfo {
+        path: path.to_string_lossy().to_string(),
+        name: display_name(path),
+        exists: path.is_dir(),
+    }
+}
+
+pub fn icloud_vault_dir() -> Option<PathBuf> {
+    let dir = dirs::home_dir()?
+        .join("Library/Mobile Documents/com~apple~CloudDocs")
+        .join("MixBoard");
+    if dir.is_dir() || fs::create_dir_all(&dir).is_ok() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+impl VaultState {
+    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Self {
+        let config_path = app.path().app_config_dir().ok().map(|dir| dir.join(CONFIG_FILE));
+        let mut config: VaultConfig = config_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+
+        // A vault that went missing (unmounted drive, deleted folder) sends the
+        // user back to the welcome screen instead of silently using drafts.
+        if let Some(current) = config.current.take() {
+            if current.is_dir() && grant_scope(app, &current).is_ok() {
+                config.current = Some(current);
+            }
+        }
+
+        Self { config_path, config: Mutex::new(config) }
+    }
+
+    fn save(&self, config: &VaultConfig) {
+        let Some(path) = &self.config_path else { return };
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(config) {
+            let _ = fs::write(path, text);
+        }
+    }
+
+    fn root(&self) -> CommandResult<PathBuf> {
+        self.config
+            .lock()
+            .unwrap()
+            .current
+            .clone()
+            .ok_or_else(|| err("没有打开的资料库"))
+    }
+
+    fn status(&self) -> VaultStatus {
+        let config = self.config.lock().unwrap();
+        let last_board = config
+            .current
+            .as_ref()
+            .and_then(|root| config.last_boards.get(root))
+            .filter(|path| path.is_file())
+            .map(|path| path.to_string_lossy().to_string());
+        VaultStatus {
+            current: config.current.as_deref().map(vault_info),
+            recent: config.recent.iter().map(|path| vault_info(path)).collect(),
+            needs_welcome: config.current.is_none() && !config.local_only,
+            last_board,
+        }
+    }
+
+    fn open<R: Runtime>(&self, app: &AppHandle<R>, path: &Path) -> CommandResult<VaultStatus> {
+        let root = path.canonicalize().map_err(|e| err(format!("无法打开文件夹：{e}")))?;
+        if !root.is_dir() {
+            return Err(err("所选路径不是文件夹"));
+        }
+        grant_scope(app, &root)?;
+        {
+            let mut config = self.config.lock().unwrap();
+            config.recent.retain(|recent| recent != &root);
+            config.recent.insert(0, root.clone());
+            config.recent.truncate(MAX_RECENT);
+            config.current = Some(root);
+            config.local_only = false;
+            self.save(&config);
+        }
+        Ok(self.status())
+    }
+}
+
+fn grant_scope<R: Runtime>(app: &AppHandle<R>, root: &Path) -> CommandResult<()> {
+    app.fs_scope().allow_directory(root, true).map_err(err)
+}
+
+/// Resolves `path` (which may not exist yet) and requires it to sit strictly
+/// inside the vault root.
+fn inside_vault(root: &Path, path: &str) -> CommandResult<PathBuf> {
+    let path = Path::new(path);
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(err("无效的路径"));
+    }
+    let resolved = if path.exists() {
+        path.canonicalize().map_err(err)?
+    } else {
+        let parent = path.parent().ok_or_else(|| err("无效的路径"))?;
+        let name = path.file_name().ok_or_else(|| err("无效的路径"))?;
+        parent.canonicalize().map_err(err)?.join(name)
+    };
+    if resolved != root && resolved.starts_with(root) {
+        Ok(resolved)
+    } else {
+        Err(err("路径不在当前资料库中"))
+    }
+}
+
+/// Folders passed as a destination may be the vault root itself.
+fn folder_in_vault(root: &Path, dir: Option<&str>) -> CommandResult<PathBuf> {
+    match dir {
+        None => Ok(root.to_path_buf()),
+        Some(dir) if Path::new(dir) == root => Ok(root.to_path_buf()),
+        Some(dir) => {
+            let dir = inside_vault(root, dir)?;
+            if dir.is_dir() { Ok(dir) } else { Err(err("文件夹不存在")) }
+        }
+    }
+}
+
+fn validate_name(name: &str) -> CommandResult<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(err("名称不能为空"));
+    }
+    if name.starts_with('.') || name.contains(['/', '\\', ':']) {
+        return Err(err("名称不能以 . 开头，也不能包含 / \\ :"));
+    }
+    Ok(name)
+}
+
+fn is_board(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case(BOARD_EXTENSION))
+}
+
+fn modified_ms(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn walk(dir: &Path, depth: usize, entries: &mut Vec<VaultEntry>) {
+    let Ok(read_dir) = fs::read_dir(dir) else { return };
+    for item in read_dir.flatten() {
+        let path = item.path();
+        let file_name = item.file_name().to_string_lossy().to_string();
+        let Ok(metadata) = item.metadata() else { continue };
+        let parent = dir.to_string_lossy().to_string();
+
+        // iCloud keeps not-yet-downloaded files as hidden `.Name.ext.icloud` stubs.
+        if let Some(stub) = file_name
+            .strip_prefix('.')
+            .and_then(|rest| rest.strip_suffix(ICLOUD_PLACEHOLDER_SUFFIX))
+        {
+            let real = dir.join(stub);
+            if is_board(&real) && !real.exists() {
+                entries.push(VaultEntry {
+                    path: real.to_string_lossy().to_string(),
+                    parent,
+                    name: board_stem(&real),
+                    kind: "board",
+                    modified: modified_ms(&metadata),
+                    downloaded: false,
+                    favorite: false,
+                });
+            }
+            continue;
+        }
+        if file_name.starts_with('.') {
+            continue;
+        }
+
+        if metadata.is_dir() {
+            entries.push(VaultEntry {
+                path: path.to_string_lossy().to_string(),
+                parent,
+                name: file_name,
+                kind: "folder",
+                modified: modified_ms(&metadata),
+                downloaded: true,
+                favorite: false,
+            });
+            if depth < MAX_DEPTH {
+                walk(&path, depth + 1, entries);
+            }
+        } else if metadata.is_file() && is_board(&path) {
+            entries.push(VaultEntry {
+                path: path.to_string_lossy().to_string(),
+                parent,
+                name: board_stem(&path),
+                kind: "board",
+                modified: modified_ms(&metadata),
+                downloaded: true,
+                favorite: false,
+            });
+        }
+    }
+}
+
+fn board_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Picks `<base>.<ext>`, then `<base> 2.<ext>`, … and creates it atomically.
+fn create_unique(dir: &Path, base: &str, extension: Option<&str>, make: impl Fn(&Path) -> std::io::Result<()>) -> CommandResult<PathBuf> {
+    for n in 1..10_000 {
+        let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
+        let name = match extension {
+            Some(ext) => format!("{stem}.{ext}"),
+            None => stem,
+        };
+        let path = dir.join(name);
+        match make(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(err(e)),
+        }
+    }
+    Err(err("无法生成新名称"))
+}
+
+// --- Favorites (vault-relative paths, so they survive moving the vault) ---
+
+fn favorites_file(root: &Path) -> PathBuf {
+    root.join(META_DIR).join(FAVORITES_FILE)
+}
+
+fn read_favorites(root: &Path) -> Vec<String> {
+    fs::read_to_string(favorites_file(root))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_favorites(root: &Path, favorites: &[String]) -> CommandResult<()> {
+    let path = favorites_file(root);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(err)?;
+    }
+    let text = serde_json::to_string_pretty(favorites).map_err(err)?;
+    fs::write(path, text).map_err(err)
+}
+
+fn relative_key(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+fn is_under(key: &str, prefix: &str) -> bool {
+    key == prefix || key.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Keeps favorites pointing at the right files after a rename (`to`) or trash (`None`).
+fn update_favorites(root: &Path, from: &Path, to: Option<&Path>) {
+    let favorites = read_favorites(root);
+    let from = relative_key(root, from);
+    if !favorites.iter().any(|key| is_under(key, &from)) {
+        return;
+    }
+    let updated: Vec<String> = favorites
+        .into_iter()
+        .filter_map(|key| {
+            if !is_under(&key, &from) {
+                return Some(key);
+            }
+            to.map(|to| format!("{}{}", relative_key(root, to), &key[from.len()..]))
+        })
+        .collect();
+    let _ = write_favorites(root, &updated);
+}
+
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &Path) -> CommandResult<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|e| err(e.localizedDescription()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_to_trash(_path: &Path) -> CommandResult<()> {
+    Err(err("此平台暂不支持移到废纸篓"))
+}
+
+// --- Commands ---
+
+#[tauri::command]
+pub fn vault_status(state: State<'_, VaultState>) -> VaultStatus {
+    state.status()
+}
+
+#[tauri::command]
+pub async fn vault_pick_folder<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, VaultState>,
+) -> CommandResult<Option<VaultStatus>> {
+    let mut dialog = app.dialog().file().set_title("选择用作资料库的文件夹");
+    if let Some(documents) = dirs::document_dir() {
+        dialog = dialog.set_directory(documents);
+    }
+    let Some(picked) = dialog.blocking_pick_folder() else { return Ok(None) };
+    let path = picked.into_path().map_err(err)?;
+    state.open(&app, &path).map(Some)
+}
+
+#[tauri::command]
+pub fn vault_use_icloud<R: Runtime>(app: AppHandle<R>, state: State<'_, VaultState>) -> CommandResult<VaultStatus> {
+    let dir = icloud_vault_dir().ok_or_else(|| err("iCloud 云盘不可用，请在系统设置中登录 iCloud 并开启 iCloud 云盘"))?;
+    state.open(&app, &dir)
+}
+
+#[tauri::command]
+pub fn vault_open_recent<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, VaultState>,
+    path: String,
+) -> CommandResult<VaultStatus> {
+    let path = PathBuf::from(path);
+    if !state.config.lock().unwrap().recent.contains(&path) {
+        return Err(err("该文件夹不在最近的资料库中"));
+    }
+    state.open(&app, &path)
+}
+
+#[tauri::command]
+pub fn vault_forget_recent(state: State<'_, VaultState>, path: String) -> VaultStatus {
+    {
+        let mut config = state.config.lock().unwrap();
+        let path = PathBuf::from(path);
+        config.recent.retain(|recent| recent != &path);
+        config.last_boards.remove(&path);
+        state.save(&config);
+    }
+    state.status()
+}
+
+#[tauri::command]
+pub fn vault_use_local_drafts(state: State<'_, VaultState>) -> VaultStatus {
+    {
+        let mut config = state.config.lock().unwrap();
+        config.current = None;
+        config.local_only = true;
+        state.save(&config);
+    }
+    state.status()
+}
+
+#[tauri::command]
+pub fn vault_set_last_board(state: State<'_, VaultState>, path: Option<String>) -> CommandResult<()> {
+    let root = state.root()?;
+    let mut config = state.config.lock().unwrap();
+    match path {
+        Some(path) => {
+            let path = inside_vault(&root, &path)?;
+            config.last_boards.insert(root, path);
+        }
+        None => {
+            config.last_boards.remove(&root);
+        }
+    }
+    state.save(&config);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn vault_list(state: State<'_, VaultState>) -> CommandResult<Vec<VaultEntry>> {
+    let root = state.root()?;
+    let mut entries = Vec::new();
+    walk(&root, 0, &mut entries);
+    let favorites = read_favorites(&root);
+    if !favorites.is_empty() {
+        for entry in &mut entries {
+            let key = relative_key(&root, Path::new(&entry.path));
+            entry.favorite = favorites.contains(&key);
+        }
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn vault_set_favorite(state: State<'_, VaultState>, path: String, favorite: bool) -> CommandResult<()> {
+    let root = state.root()?;
+    let key = relative_key(&root, &inside_vault(&root, &path)?);
+    let mut favorites = read_favorites(&root);
+    favorites.retain(|existing| existing != &key);
+    if favorite {
+        favorites.push(key);
+    }
+    write_favorites(&root, &favorites)
+}
+
+/// Creates `未命名 N.mixboard` in `dir` (the vault root when omitted) holding
+/// `content`, and returns its path.
+#[tauri::command]
+pub fn vault_create_board(state: State<'_, VaultState>, dir: Option<String>, content: String) -> CommandResult<String> {
+    let root = state.root()?;
+    let dir = folder_in_vault(&root, dir.as_deref())?;
+    let path = create_unique(&dir, UNTITLED_BOARD, Some(BOARD_EXTENSION), |path| {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        file.write_all(content.as_bytes())
+    })?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn vault_create_folder(state: State<'_, VaultState>, dir: Option<String>) -> CommandResult<String> {
+    let root = state.root()?;
+    let dir = folder_in_vault(&root, dir.as_deref())?;
+    let path = create_unique(&dir, UNTITLED_FOLDER, None, |path| fs::create_dir(path))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Renames a board (keeping its extension) or folder in place; returns the new path.
+#[tauri::command]
+pub fn vault_rename(state: State<'_, VaultState>, path: String, name: String) -> CommandResult<String> {
+    let root = state.root()?;
+    let source = inside_vault(&root, &path)?;
+    if !source.exists() {
+        return Err(err("文件不存在"));
+    }
+    let name = validate_name(&name)?;
+    let file_name = if source.is_file() && is_board(&source) {
+        format!("{name}.{BOARD_EXTENSION}")
+    } else {
+        name.to_string()
+    };
+    let target = source.with_file_name(file_name);
+    if target == source {
+        return Ok(path);
+    }
+    // On a case-insensitive volume, "a" → "A" finds the source itself.
+    let same_file = target.canonicalize().is_ok_and(|resolved| resolved == source);
+    if target.exists() && !same_file {
+        return Err(err(format!("已存在名为「{name}」的项目")));
+    }
+    fs::rename(&source, &target).map_err(err)?;
+    update_favorites(&root, &source, Some(&target));
+
+    let mut config = state.config.lock().unwrap();
+    if let Some(last) = config.last_boards.get_mut(&root) {
+        if let Ok(rest) = last.strip_prefix(&source) {
+            *last = target.join(rest);
+            state.save(&config);
+        }
+    }
+    Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn vault_trash(state: State<'_, VaultState>, path: String) -> CommandResult<()> {
+    let root = state.root()?;
+    let target = inside_vault(&root, &path)?;
+    if !target.exists() {
+        return Err(err("文件不存在"));
+    }
+    move_to_trash(&target)?;
+    update_favorites(&root, &target, None);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn favorites_follow_renames_and_trash() {
+        let root = temp_vault("favorites");
+        write_favorites(&root, &["项目/a.mixboard".into(), "项目2/b.mixboard".into(), "c.mixboard".into()]).unwrap();
+        update_favorites(&root, &root.join("项目"), Some(&root.join("工作")));
+        assert_eq!(read_favorites(&root), vec!["工作/a.mixboard", "项目2/b.mixboard", "c.mixboard"]);
+        update_favorites(&root, &root.join("c.mixboard"), None);
+        assert_eq!(read_favorites(&root), vec!["工作/a.mixboard", "项目2/b.mixboard"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn temp_vault(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mixboard-vault-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn paths_must_stay_inside_the_vault() {
+        let root = temp_vault("inside");
+        fs::create_dir(root.join("notes")).unwrap();
+        let s = |p: &Path| p.to_string_lossy().to_string();
+
+        assert!(inside_vault(&root, &s(&root.join("notes"))).is_ok());
+        assert!(inside_vault(&root, &s(&root.join("notes/new.mixboard"))).is_ok());
+        assert!(inside_vault(&root, &s(&root)).is_err(), "the root itself is not an entry");
+        assert!(inside_vault(&root, &s(&root.join("../escape.mixboard"))).is_err());
+        assert!(inside_vault(&root, "relative.mixboard").is_err());
+        assert!(inside_vault(&root, "/etc/hosts").is_err());
+        assert!(folder_in_vault(&root, None).unwrap() == root);
+        assert!(folder_in_vault(&root, Some(&s(&root.join("missing")))).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn names_are_validated() {
+        assert_eq!(validate_name("  周报 ").unwrap(), "周报");
+        assert!(validate_name("").is_err());
+        assert!(validate_name(".hidden").is_err());
+        assert!(validate_name("a/b").is_err());
+        assert!(validate_name("a:b").is_err());
+    }
+
+    #[test]
+    fn untitled_boards_get_unique_names() {
+        let root = temp_vault("unique");
+        let make = |path: &Path| fs::OpenOptions::new().write(true).create_new(true).open(path).map(|_| ());
+        let first = create_unique(&root, UNTITLED_BOARD, Some(BOARD_EXTENSION), make).unwrap();
+        let second = create_unique(&root, UNTITLED_BOARD, Some(BOARD_EXTENSION), make).unwrap();
+        assert_eq!(first.file_name().unwrap(), "未命名.mixboard");
+        assert_eq!(second.file_name().unwrap(), "未命名 2.mixboard");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn listing_finds_boards_folders_and_icloud_placeholders() {
+        let root = temp_vault("list");
+        fs::create_dir(root.join("项目")).unwrap();
+        fs::create_dir(root.join(".mixboard")).unwrap();
+        fs::write(root.join("a.mixboard"), "{}").unwrap();
+        fs::write(root.join("项目/b.mixboard"), "{}").unwrap();
+        fs::write(root.join("notes.txt"), "").unwrap();
+        fs::write(root.join(".c.mixboard.icloud"), "").unwrap();
+
+        let mut entries = Vec::new();
+        walk(&root, 0, &mut entries);
+        let mut seen: Vec<_> = entries.iter().map(|e| (e.name.as_str(), e.kind, e.downloaded)).collect();
+        seen.sort();
+        assert_eq!(seen, vec![("a", "board", true), ("b", "board", true), ("c", "board", false), ("项目", "folder", true)]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+}

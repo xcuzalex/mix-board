@@ -7,6 +7,7 @@ import { useUIStore } from '../store/ui';
 import { useAutosaveStore, type AutosaveStatus } from '../utils/autosave';
 import { flushPendingCanvasInteractionState } from '../utils/canvas-interaction-flush';
 import { exportCurrentBoardAsImage, exportCurrentBoardAsMarkdown, getDocumentDisplayName, saveCurrentDocument } from '../utils/document-io';
+import { createBoard, openBoard, openLibrary, pickVaultFolder } from '../utils/vault';
 
 const NATIVE_MENU_EVENT = 'mixboard-native-menu';
 
@@ -42,7 +43,6 @@ export function TopBar() {
   const lastSavedAt = useAutosaveStore((s) => s.lastSavedAt);
   const autosaveError = useAutosaveStore((s) => s.error);
   const loadDocument = useDocumentStore((s) => s.loadDocument);
-  const newDocument = useDocumentStore((s) => s.newDocument);
   const setFilePath = useDocumentStore((s) => s.setFilePath);
   const pushHistory = useDocumentStore((s) => s.pushHistory);
   const removeElements = useDocumentStore((s) => s.removeElements);
@@ -81,6 +81,12 @@ export function TopBar() {
   const handleOpen = async () => {
     flushPendingCanvasInteractionState();
     const platform = await getPlatform();
+    if (platform.vault) {
+      // Desktop: pick a path, then open it like a vault board (saving the current one first).
+      const result = await platform.openFile();
+      if (result) await openBoard(result.path);
+      return;
+    }
     const result = await platform.openFile();
     if (result) {
       loadDocument(result.content);
@@ -96,11 +102,16 @@ export function TopBar() {
     const runMenuAction = async (actionId: string) => {
       switch (actionId) {
         case 'file.new':
-          flushPendingCanvasInteractionState();
-          newDocument();
+          await createBoard();
           return;
         case 'file.open':
           await handleOpen();
+          return;
+        case 'file.open_vault':
+          await pickVaultFolder();
+          return;
+        case 'file.library':
+          openLibrary();
           return;
         case 'file.save':
           await saveCurrentDocument();
@@ -215,7 +226,6 @@ export function TopBar() {
     };
   }, [
     isDesktopApp,
-    newDocument,
     selectedIds,
     canGroup,
     canUngroup,

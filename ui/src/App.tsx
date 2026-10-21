@@ -4,12 +4,15 @@ import { Toolbar } from './components/Toolbar';
 import { TopBar } from './components/TopBar';
 import { ZoomControl } from './components/ZoomControl';
 import { PropertyPanel } from './components/PropertyPanel';
-import { OutlinePanel } from './components/OutlinePanel';
+import { LeftSidebar } from './components/LeftSidebar';
 import { DraftRestorePrompt } from './components/DraftRestorePrompt';
+import { VaultWelcome } from './components/VaultWelcome';
+import { LibraryPage, VaultNotice } from './components/LibraryPage';
 import { isDesktop } from './platform';
 import { useUIStore } from './store/ui';
 import { applyTheme, watchSystemTheme } from './theme';
 import { startAutosave } from './utils/autosave';
+import { initVault } from './utils/vault';
 
 export default function App() {
   const topInset = isDesktop() ? '' : 'pt-11';
@@ -25,6 +28,9 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => startAutosave(), []);
+  useEffect(() => {
+    void initVault();
+  }, []);
 
   return (
     <div className="w-screen h-screen overflow-hidden relative bg-white dark:bg-[#17171b]">
@@ -32,11 +38,14 @@ export default function App() {
       <DraftRestorePrompt />
       <div className={`absolute inset-0 ${topInset}`}>
         <Canvas />
-        <OutlinePanel />
+        <LeftSidebar />
         <Toolbar />
         <PropertyPanel />
         <ZoomControl />
       </div>
+      <LibraryPage />
+      <VaultNotice />
+      <VaultWelcome />
     </div>
   );
 }

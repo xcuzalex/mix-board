@@ -44,13 +44,17 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
 
     let file_new = item(app, "file.new", "新建画板", Some("CmdOrCtrl+N"))?;
+    let file_library = item(app, "file.library", "资料库", Some("CmdOrCtrl+Shift+L"))?;
     let file_open = item(app, "file.open", "打开文件", Some("CmdOrCtrl+O"))?;
+    let file_open_vault = item(app, "file.open_vault", "打开文件夹作为库…", Some("CmdOrCtrl+Shift+O"))?;
     let file_save = item(app, "file.save", "保存", Some("CmdOrCtrl+S"))?;
     let file_export = item(app, "file.export_png", "导出 PNG…", Some("CmdOrCtrl+Shift+E"))?;
     let file_export_md = item(app, "file.export_md", "导出 Markdown…", Some("CmdOrCtrl+Shift+M"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
         .item(&file_new)
+        .item(&file_library)
         .item(&file_open)
+        .item(&file_open_vault)
         .separator()
         .item(&file_save)
         .item(&file_export)
@@ -154,6 +158,8 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         id,
         "file.new"
             | "file.open"
+            | "file.open_vault"
+            | "file.library"
             | "file.save"
             | "file.export_png"
             | "file.export_md"

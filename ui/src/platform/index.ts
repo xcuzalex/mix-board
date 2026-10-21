@@ -1,9 +1,66 @@
+export interface VaultInfo {
+  path: string;
+  name: string;
+  /** False when the folder is gone (deleted, or on an unmounted drive). */
+  exists: boolean;
+}
+
+export interface VaultStatus {
+  current: VaultInfo | null;
+  recent: VaultInfo[];
+  /** First launch (or the vault went missing): show the welcome screen. */
+  needsWelcome: boolean;
+  /** Board last opened in the current vault, if it still exists. */
+  lastBoard: string | null;
+}
+
+export interface VaultEntry {
+  path: string;
+  parent: string;
+  /** Folder name, or board file name without `.mixboard`. */
+  name: string;
+  kind: 'folder' | 'board';
+  /** Milliseconds since the epoch. */
+  modified: number;
+  /** False for iCloud placeholders not yet downloaded. */
+  downloaded: boolean;
+  /** Starred in the library. */
+  favorite: boolean;
+}
+
+/**
+ * A vault is one folder of `*.mixboard` boards (desktop only). The native side
+ * owns which folder that is and rejects paths outside it.
+ */
+export interface VaultBridge {
+  status(): Promise<VaultStatus>;
+  /** Native folder picker; null when cancelled. */
+  pickFolder(): Promise<VaultStatus | null>;
+  useICloud(): Promise<VaultStatus>;
+  openRecent(path: string): Promise<VaultStatus>;
+  forgetRecent(path: string): Promise<VaultStatus>;
+  useLocalDrafts(): Promise<VaultStatus>;
+  setLastBoard(path: string | null): Promise<void>;
+  list(): Promise<VaultEntry[]>;
+  setFavorite(path: string, favorite: boolean): Promise<void>;
+  /** Creates `未命名 N.mixboard` in `dir` (vault root when null); returns its path. */
+  createBoard(dir: string | null, content: string): Promise<string>;
+  createFolder(dir: string | null): Promise<string>;
+  /** Renames in place (boards keep their extension); returns the new path. */
+  rename(path: string, name: string): Promise<string>;
+  moveToTrash(path: string): Promise<void>;
+}
+
 export interface PlatformBridge {
   saveFile(data: string, defaultPath?: string): Promise<string | null>;
   openFile(): Promise<{ path: string; content: string } | null>;
   saveAsFile(data: string, defaultPath?: string): Promise<string | null>;
   /** Overwrite a document the user already picked, without a dialog (desktop only). */
   writeDocumentFile(path: string, data: string): Promise<void>;
+  /** Read a document by path without a dialog (desktop only). */
+  readDocumentFile(path: string): Promise<string>;
+  /** Vault access; null on the web, which keeps drafts + download/upload. */
+  readonly vault: VaultBridge | null;
   exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null>;
   /** Save a text document (e.g. Markdown export) with a file-type filter. */
   saveTextFile(data: string, defaultPath: string, filter: { name: string; extensions: string[] }): Promise<string | null>;

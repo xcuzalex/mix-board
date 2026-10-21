@@ -2,6 +2,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { create } from 'zustand';
 import { getPlatform, isDesktop } from '../platform';
 import { useDocumentStore } from '../store/document';
+import { useVaultStore } from '../store/vault';
 import type { AppState, EmbeddedFile } from '../types/document';
 import type { Element } from '../types/element';
 import { serializeDocument } from './document-io';
@@ -148,8 +149,53 @@ function checkForDraft() {
 
 // --- Saving ---
 
+/**
+ * With a vault open, an untitled board becomes `未命名 N.mixboard` in the vault
+ * on its first save: no dialog. Returns the new path, or null without a vault.
+ */
+async function createBoardInVault(snapshot: Snapshot) {
+  const { vault, folder } = useVaultStore.getState();
+  const platform = await getPlatform();
+  if (!vault || !platform.vault) return null;
+  const path = await platform.vault.createBoard(
+    folder,
+    serializeDocument(snapshot.elements, snapshot.appState, snapshot.files),
+  );
+  void platform.vault.setLastBoard(path).catch(() => undefined);
+  void useVaultStore.getState().refreshEntries();
+  return path;
+}
+
 async function persist(snapshot: Snapshot) {
   useAutosaveStore.setState({ status: 'saving' });
+
+  if (isDesktop() && !snapshot.filePath && useVaultStore.getState().vault) {
+    if (snapshot.elements.length === 0) {
+      // Nothing worth a file yet; don't litter the vault with empty boards.
+      useAutosaveStore.setState({ status: 'idle', error: null });
+      return;
+    }
+    try {
+      const path = await createBoardInVault(snapshot);
+      if (path) {
+        const unchanged = isUnchangedSince(snapshot);
+        useDocumentStore.setState(unchanged ? { filePath: path, isDirty: false } : { filePath: path });
+        useAutosaveStore.setState({
+          status: unchanged ? 'saved' : 'dirty',
+          lastSavedAt: Date.now(),
+          error: null,
+        });
+        return;
+      }
+    } catch (err) {
+      useAutosaveStore.setState({ status: 'error', error: errorMessage(err) });
+      await checkForDraft();
+      if (!useAutosaveStore.getState().pendingDraft) {
+        await writeDraft(buildDraft(snapshot)).catch(() => undefined);
+      }
+      return;
+    }
+  }
 
   if (isDesktop() && snapshot.filePath) {
     try {
@@ -161,6 +207,7 @@ async function persist(snapshot: Snapshot) {
       if (isUnchangedSince(snapshot)) {
         useDocumentStore.setState({ isDirty: false });
       }
+      useVaultStore.getState().touchEntry(snapshot.filePath);
       useAutosaveStore.setState({
         status: useDocumentStore.getState().isDirty ? 'dirty' : 'saved',
         lastSavedAt: Date.now(),
@@ -228,6 +275,15 @@ function schedule() {
 export function flushAutosave() {
   cancelTimer();
   return runPersist();
+}
+
+/**
+ * Cmd+S for a board that has a file (or will get one in the vault): write it
+ * now, in place, even if the debounced save already ran its course.
+ */
+export function saveNow() {
+  if (useDocumentStore.getState().isDirty) pendingChange = true;
+  return flushAutosave();
 }
 
 /**

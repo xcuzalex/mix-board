@@ -1,6 +1,7 @@
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile, writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
-import type { PlatformBridge } from './index';
+import { invoke } from '@tauri-apps/api/core';
+import type { PlatformBridge, VaultBridge, VaultEntry, VaultStatus } from './index';
 
 const DEFAULT_DOCUMENT_NAME = '未命名.mixboard';
 const DEFAULT_EXPORT_NAME = 'mixboard-export.png';
@@ -11,7 +12,25 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string) {
   });
 }
 
+const tauriVault: VaultBridge = {
+  status: () => invoke<VaultStatus>('vault_status'),
+  pickFolder: () => invoke<VaultStatus | null>('vault_pick_folder'),
+  useICloud: () => invoke<VaultStatus>('vault_use_icloud'),
+  openRecent: (path) => invoke<VaultStatus>('vault_open_recent', { path }),
+  forgetRecent: (path) => invoke<VaultStatus>('vault_forget_recent', { path }),
+  useLocalDrafts: () => invoke<VaultStatus>('vault_use_local_drafts'),
+  setLastBoard: (path) => invoke<void>('vault_set_last_board', { path }),
+  list: () => invoke<VaultEntry[]>('vault_list'),
+  setFavorite: (path, favorite) => invoke<void>('vault_set_favorite', { path, favorite }),
+  createBoard: (dir, content) => invoke<string>('vault_create_board', { dir, content }),
+  createFolder: (dir) => invoke<string>('vault_create_folder', { dir }),
+  rename: (path, name) => invoke<string>('vault_rename', { path, name }),
+  moveToTrash: (path) => invoke<void>('vault_trash', { path }),
+};
+
 export class TauriBridge implements PlatformBridge {
+  readonly vault = tauriVault;
+
   async saveFile(data: string, defaultPath?: string): Promise<string | null> {
     return this.saveAsFile(data, defaultPath);
   }
@@ -38,6 +57,10 @@ export class TauriBridge implements PlatformBridge {
 
   async writeDocumentFile(path: string, data: string): Promise<void> {
     await writeTextFile(path, data);
+  }
+
+  async readDocumentFile(path: string): Promise<string> {
+    return readTextFile(path);
   }
 
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {

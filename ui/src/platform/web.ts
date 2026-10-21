@@ -25,6 +25,9 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string) {
 }
 
 export class WebBridge implements PlatformBridge {
+  // Browsers can't keep access to a folder; the web build stays draft-based.
+  readonly vault = null;
+
   async saveFile(data: string, defaultPath?: string): Promise<string | null> {
     const blob = new Blob([data], { type: 'application/json' });
     const fileName = getDownloadFileName(defaultPath, DEFAULT_DOCUMENT_NAME);
@@ -54,6 +57,10 @@ export class WebBridge implements PlatformBridge {
   async writeDocumentFile(): Promise<void> {
     // The web build only knows download names, never a writable path.
     throw new Error('Writing to a file path is not supported on the web');
+  }
+
+  async readDocumentFile(): Promise<string> {
+    throw new Error('Reading a file path is not supported on the web');
   }
 
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {
