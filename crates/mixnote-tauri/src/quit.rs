@@ -8,7 +8,9 @@ use tauri::{AppHandle, Emitter, ExitRequestApi, Manager, Runtime, State};
 /// Asks the webview to write unsaved edits; it answers with `quit_flush_done`.
 pub const FLUSH_EVENT_NAME: &str = "mixnote-flush-before-quit";
 /// Quit anyway if the webview doesn't answer (crashed, still loading, stuck write).
-const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+/// It answers as soon as the write is done, so this only bounds a hang; it is
+/// generous because a large board on a slow or synced disk can take seconds.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct QuitState {

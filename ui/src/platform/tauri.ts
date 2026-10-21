@@ -69,16 +69,17 @@ export class TauriBridge implements PlatformBridge {
       filters: [{ name: 'MixNote', extensions: ['mixnote'] }],
     });
     if (!path) return null;
-    await writeTextFile(path, data);
+    await this.writeDocumentFile(path, data);
     return path;
   }
 
+  /** Atomic write (temp file + rename) on the native side; limited to vault boards and dialog-picked files. */
   async writeDocumentFile(path: string, data: string): Promise<void> {
-    await writeTextFile(path, data);
+    await invoke<void>('write_document', { path, content: data });
   }
 
   async readDocumentFile(path: string): Promise<string> {
-    return readTextFile(path);
+    return invoke<string>('read_document', { path });
   }
 
   async exportAsImage(canvas: HTMLCanvasElement, format: 'png', defaultPath?: string): Promise<string | null> {

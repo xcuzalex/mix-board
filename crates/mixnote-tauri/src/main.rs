@@ -1,4 +1,4 @@
-mod commands;
+mod fs_util;
 mod native_menu;
 mod quit;
 mod vault;
@@ -11,15 +11,14 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .manage(quit::QuitState::default())
         .setup(|app| {
-            native_menu::install(&app.handle())?;
-            app.manage(vault::VaultState::load(&app.handle()));
+            native_menu::install(app.handle())?;
+            app.manage(vault::VaultState::load(app.handle()));
             Ok(())
         })
         .on_menu_event(|app, event| {
             native_menu::handle_event(app, &event.id().0);
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_icloud_path,
             vault::vault_status,
             vault::vault_pick_folder,
             vault::vault_use_icloud,
@@ -33,6 +32,8 @@ fn main() {
             vault::vault_create_folder,
             vault::vault_rename,
             vault::vault_trash,
+            vault::read_document,
+            vault::write_document,
             quit::quit_flush_done,
         ])
         .build(tauri::generate_context!())
