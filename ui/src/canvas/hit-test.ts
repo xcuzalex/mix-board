@@ -1,6 +1,7 @@
 import type { Element, LinearElement } from '../types/element';
 import { pointInRect, pointInEllipse, pointInDiamond } from '../utils/math';
 import { createSceneIndex, getLinearAbsolutePoints, getLinearBounds, type SceneIndex } from './linear';
+import { getLinearPathPoints } from './render/linear';
 
 const HIT_THRESHOLD = 4;
 const SPATIAL_GRID_SIZE = 500;
@@ -52,6 +53,16 @@ function getElementBBox(el: Element): { x: number; y: number; width: number; hei
   }
 }
 
+function pathBounds(points: [number, number][]) {
+  if (points.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
 export class SpatialIndex {
   private cells = new Map<string, string[]>();
   private idSet = new Set<string>();
@@ -61,7 +72,8 @@ export class SpatialIndex {
       let bbox: { x: number; y: number; width: number; height: number };
       if (el.type === 'line' || el.type === 'arrow') {
         if (sceneIndex) {
-          bbox = getLinearBounds(el as LinearElement, sceneIndex);
+          bbox = pathBounds(getLinearPathPoints(el as LinearElement, sceneIndex))
+            ?? getLinearBounds(el as LinearElement, sceneIndex);
         } else {
           bbox = getElementBBox(el);
         }
@@ -191,27 +203,12 @@ function hitTestTriangle(el: Element, px: number, py: number): boolean {
 
 function hitTestLinear(el: Element, scene: SceneIndex, px: number, py: number): boolean {
   if (el.type !== 'line' && el.type !== 'arrow') return false;
-  const bounds = getLinearBounds(el, scene);
-  const margin = HIT_THRESHOLD;
-  if (
-    px < bounds.x - margin ||
-    px > bounds.x + bounds.width + margin ||
-    py < bounds.y - margin ||
-    py > bounds.y + bounds.height + margin
-  ) {
-    return false;
-  }
-
-  const points = getLinearAbsolutePoints(el, scene);
+  // Test against the drawn path (curves bow and elbows detour outside the chord).
+  const points = getLinearPathPoints(el as LinearElement, scene);
   for (let i = 0; i < points.length - 1; i++) {
     const [x1, y1] = points[i];
     const [x2, y2] = points[i + 1];
-    const dist = pointToSegmentDistance(
-      px, py,
-      x1, y1,
-      x2, y2,
-    );
-    if (dist < HIT_THRESHOLD) return true;
+    if (pointToSegmentDistance(px, py, x1, y1, x2, y2) < HIT_THRESHOLD) return true;
   }
   return false;
 }

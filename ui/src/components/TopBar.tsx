@@ -203,6 +203,9 @@ export function TopBar() {
         case 'view.toggle_grid':
           toggleGrid();
           return;
+        case 'view.toggle_dots':
+          useUIStore.getState().toggleDots();
+          return;
         case 'view.reset':
           setZoom(1);
           setViewport(0, 0);

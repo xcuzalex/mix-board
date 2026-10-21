@@ -44,9 +44,12 @@ interface UIStore {
   // UI panels
   showPropertyPanel: boolean;
   showGrid: boolean;
+  /** Dot-grid canvas backdrop (remembered per device). */
+  showDots: boolean;
   showOutline: boolean;
   setShowPropertyPanel: (show: boolean) => void;
   toggleGrid: () => void;
+  toggleDots: () => void;
   toggleOutline: () => void;
   setShowOutline: (show: boolean) => void;
 
@@ -67,6 +70,24 @@ interface UIStore {
   effectiveTheme: EffectiveTheme;
   setTheme: (theme: Theme) => void;
   cycleTheme: () => void;
+}
+
+const DOTS_STORAGE_KEY = 'mixboard.canvas.dots';
+
+function loadStoredDots() {
+  try {
+    return localStorage.getItem(DOTS_STORAGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function storeDots(show: boolean) {
+  try {
+    localStorage.setItem(DOTS_STORAGE_KEY, show ? '1' : '0');
+  } catch {
+    // A per-device preference; ignore storage failures.
+  }
 }
 
 const initialTheme = loadStoredTheme();
@@ -117,9 +138,14 @@ export const useUIStore = create<UIStore>()((set, get) => ({
 
   showPropertyPanel: false,
   showGrid: false,
+  showDots: loadStoredDots(),
   showOutline: false,
   setShowPropertyPanel: (show) => set({ showPropertyPanel: show }),
   toggleGrid: () => set((state) => ({ showGrid: !state.showGrid })),
+  toggleDots: () => set((state) => {
+    storeDots(!state.showDots);
+    return { showDots: !state.showDots };
+  }),
   toggleOutline: () => set((state) => ({ showOutline: !state.showOutline })),
   setShowOutline: (show) => set({ showOutline: show }),
 

@@ -1,5 +1,6 @@
 mod commands;
 mod native_menu;
+mod quit;
 mod vault;
 
 use tauri::Manager;
@@ -8,6 +9,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(quit::QuitState::default())
         .setup(|app| {
             native_menu::install(&app.handle())?;
             app.manage(vault::VaultState::load(&app.handle()));
@@ -31,7 +33,13 @@ fn main() {
             vault::vault_create_folder,
             vault::vault_rename,
             vault::vault_trash,
+            quit::quit_flush_done,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                quit::on_exit_requested(app, *code, api);
+            }
+        });
 }

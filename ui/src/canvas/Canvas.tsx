@@ -224,6 +224,7 @@ export function Canvas() {
   const viewportY = useUIStore((s) => s.viewportY);
   const setViewport = useUIStore((s) => s.setViewport);
   const showGrid = useUIStore((s) => s.showGrid);
+  const showDots = useUIStore((s) => s.showDots);
   const cursorStyle = useUIStore((s) => s.cursorStyle);
   const effectiveTheme = useUIStore((s) => s.effectiveTheme);
   const setCursorStyle = useUIStore((s) => s.setCursorStyle);
@@ -300,6 +301,7 @@ export function Canvas() {
     const bgColor = isDefaultBackground(appState.viewBackgroundColor)
       ? canvasTheme.background
       : appState.viewBackgroundColor;
+    if (sceneRendererRef.current) sceneRendererRef.current.backgroundDots = showDots;
     sceneRendererRef.current?.renderSceneLayer(
       elements,
       bgColor,
@@ -316,6 +318,7 @@ export function Canvas() {
     appState.viewBackgroundColor,
     appState.gridSize,
     showGrid,
+    showDots,
     editingElement,
     editingMindmapNode,
     effectiveTheme,
