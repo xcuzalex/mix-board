@@ -92,6 +92,15 @@ export const SHAPE_LIBRARY_SECTIONS: Array<{ title: string; items: LibraryItem[]
     ],
   },
   {
+    title: '结构',
+    items: [
+      { id: 'table', label: '表格', tool: 'table', keywords: '表格 table 行 列', section: '结构' },
+      { id: 'kanban', label: '看板', tool: 'kanban', keywords: '看板 kanban 任务 待办', section: '结构' },
+      { id: 'matrix', label: '四象限', tool: 'matrix', keywords: '四象限 矩阵 优先级 SWOT', section: '结构' },
+      { id: 'code', label: '代码块', tool: 'code', keywords: '代码 code 程序', section: '结构' },
+    ],
+  },
+  {
     title: '容器',
     items: [
       { id: 'mindmap', label: '脑图', tool: 'mindmap', keywords: '脑图 思维导图', section: '容器', shortcut: 'M' },
@@ -259,6 +268,34 @@ export function ToolGlyph({
         <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d="M6 15.5l6.6-6.6 4.4 4.4-6.6 6.6H6z" />
           <path d="M4.5 19.5h9" />
+        </svg>
+      );
+    case 'table':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3.5" y="5" width="17" height="14" rx="2" />
+          <path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14" />
+        </svg>
+      );
+    case 'kanban':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3.5" y="4.5" width="5" height="15" rx="1.5" />
+          <rect x="9.5" y="4.5" width="5" height="10" rx="1.5" />
+          <rect x="15.5" y="4.5" width="5" height="12.5" rx="1.5" />
+        </svg>
+      );
+    case 'matrix':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M12 4v16M4 12h16" />
+        </svg>
+      );
+    case 'code':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 8l-4 4 4 4M15 8l4 4-4 4M13 6l-2 12" />
         </svg>
       );
     case 'frame':

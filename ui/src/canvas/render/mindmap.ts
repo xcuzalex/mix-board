@@ -9,6 +9,7 @@
  * threaded in via MindmapDrawDeps, so these functions hold no state of their own.
  */
 import type { Element, MindmapElement, MindmapNode } from '../../types/element';
+import { withAlpha } from './color';
 import { THEME } from '../../utils/color';
 import type { SceneIndex } from '../linear';
 import {
@@ -70,13 +71,6 @@ function countDescendants(node: MindmapNode): number {
   return count;
 }
 
-function withAlpha(hex: string, alpha: number): string {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
 
 type MindmapNodeRef = { elementId: string; nodeId: string };
 

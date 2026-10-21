@@ -15,6 +15,9 @@ import type { Renderer } from './renderer';
 import { getElementShapeVariant } from './shape-utils';
 import { findMindmapNode } from './mindmap-ops';
 import { STICKY_NOTE_COLORS } from '../utils/color';
+import { CODE, CODE_FONT, KANBAN, STRUCTURED_FONT, TABLE_CELL_PAD, slotRect, type EditSlot } from './structured';
+import { codeEditorColors } from './render/structured';
+import { canvasTheme } from './canvas-theme';
 
 const EDIT_PLACEHOLDERS = new Set(['输入文本', '中心主题', '新主题', '分区', '框架']);
 
@@ -142,10 +145,14 @@ export interface EditingPosition {
   borderRadius?: number;
   textAlign?: 'center' | 'left';
   chrome?: 'plain' | 'panel';
+  /** Unitless line height; defaults to the editor's 1.3. */
+  lineHeight?: number;
 }
 
 export interface ComputeEditingPositionParams {
   editingElement: Element | null;
+  /** Part of a structured element (table cell, kanban card…) being edited. */
+  editingSlot?: EditSlot | null;
   editingMindmapNode: { elementId: string; nodeId: string } | null;
   zoom: number;
   viewport: Viewport;
@@ -156,6 +163,13 @@ export interface ComputeEditingPositionParams {
 /** Screen-space position & style for the inline text editor overlay. */
 export function computeEditingPosition(params: ComputeEditingPositionParams): EditingPosition {
   const { editingElement, editingMindmapNode, zoom, viewport, sceneIndex, renderer } = params;
+
+  if (editingElement && params.editingSlot) {
+    // Prefer the live element so the editor follows auto-fit resizes.
+    const live = sceneIndex.byId.get(editingElement.id) ?? editingElement;
+    const slotPosition = computeSlotEditingPosition(live, params.editingSlot, zoom, viewport);
+    if (slotPosition) return slotPosition;
+  }
 
   if (editingElement) {
     // Section/frame: textarea positioned above the element (title area)
@@ -260,5 +274,52 @@ export function computeEditingPosition(params: ComputeEditingPositionParams): Ed
     backgroundColor: 'rgba(255, 255, 255, 0.96)',
     borderRadius: 4,
     chrome: 'panel' as const,
+  };
+}
+
+/** Editor overlay for one slot of a table / kanban / matrix / code card. */
+function computeSlotEditingPosition(el: Element, slot: EditSlot, zoom: number, viewport: Viewport): EditingPosition | null {
+  const rect = slotRect(el, slot);
+  if (!rect) return null;
+  const screen = viewport.canvasToScreen(rect.x, rect.y);
+  const surface = canvasTheme.isDark ? '#2a2a2e' : '#FFFFFF';
+  const base = {
+    left: screen.x,
+    top: screen.y,
+    width: rect.w * zoom,
+    height: rect.h * zoom,
+    color: canvasTheme.foreground,
+    backgroundColor: surface,
+    fontFamily: STRUCTURED_FONT,
+    textAlign: 'left' as const,
+    chrome: 'panel' as const,
+  };
+  if (el.type === 'code') {
+    const colors = codeEditorColors(el);
+    const gutter = Math.max(2, String(el.code.split('\n').length).length) * el.fontSize * 0.62 + 22;
+    return {
+      ...base,
+      fontSize: el.fontSize * zoom,
+      fontFamily: CODE_FONT,
+      lineHeight: CODE.lineHeight,
+      color: colors.color,
+      backgroundColor: colors.background,
+      padding: `${CODE.pad * zoom}px ${CODE.pad * zoom}px ${CODE.pad * zoom}px ${gutter * zoom}px`,
+      borderRadius: 0,
+      chrome: 'plain',
+    };
+  }
+  if (slot.kind === 'cell') {
+    return { ...base, fontSize: 14 * zoom, padding: `${(TABLE_CELL_PAD - 2) * zoom}px ${TABLE_CELL_PAD * zoom}px`, borderRadius: 2 * zoom };
+  }
+  if (slot.kind === 'card') {
+    return { ...base, fontSize: KANBAN.fontSize * zoom, padding: `${(KANBAN.cardPad - 2) * zoom}px ${KANBAN.cardPad * zoom}px`, borderRadius: 8 * zoom };
+  }
+  const titleLike = slot.kind === 'title';
+  return {
+    ...base,
+    fontSize: (titleLike ? 16 : 14) * zoom,
+    padding: `${4 * zoom}px ${6 * zoom}px`,
+    borderRadius: 6 * zoom,
   };
 }

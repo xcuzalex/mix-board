@@ -2,6 +2,7 @@ import type { Element, LinearElement } from '../types/element';
 import { pointInRect, pointInEllipse, pointInDiamond } from '../utils/math';
 import { createSceneIndex, getLinearAbsolutePoints, getLinearBounds, type SceneIndex } from './linear';
 import { getLinearPathPoints } from './render/linear';
+import { kanbanHeight } from './structured';
 
 const HIT_THRESHOLD = 4;
 /** Connectors are thin; give them a wider grab zone than shape edges. */
@@ -53,6 +54,8 @@ function getElementBBox(el: Element): { x: number; y: number; width: number; hei
       return { x: el.x - 20, y: el.y - 25, width: el.width + 40, height: el.height + 45 };
     case 'mindmap':
       return { x: el.x - 50, y: el.y - 50, width: el.width + 100, height: el.height + 100 };
+    case 'kanban':
+      return { x: el.x, y: el.y, width: el.width, height: kanbanHeight(el) };
     default:
       return { x: el.x, y: el.y, width: el.width, height: el.height };
   }
@@ -154,7 +157,13 @@ export function hitTestElement(el: Element, elementsOrScene: Element[] | SceneIn
     case 'text':
     case 'sticky_note':
     case 'image':
+    case 'table':
+    case 'matrix':
+    case 'code':
       return pointInRect(x, y, el.x, el.y, el.width, el.height);
+    case 'kanban':
+      // Cards can extend past a board resized shorter than its content.
+      return pointInRect(x, y, el.x, el.y, el.width, kanbanHeight(el));
 
     case 'section':
     case 'frame': {
@@ -190,7 +199,6 @@ export function hitTestElement(el: Element, elementsOrScene: Element[] | SceneIn
       return hitTestFreedraw(el, x, y);
 
     case 'mindmap':
-    case 'table':
     default:
       return pointInRect(x, y, el.x, el.y, el.width, el.height);
   }

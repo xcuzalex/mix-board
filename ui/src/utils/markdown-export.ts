@@ -52,6 +52,23 @@ function elementToMarkdown(el: Element): string | null {
       const text = (el.text ?? '').trim();
       return text || null;
     }
+    case 'table': {
+      // GFM table; a table without a header row gets an empty one.
+      const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\n/g, '<br>').trim() || ' ';
+      const rows = el.cells.map((row) => `| ${row.map((c) => cell(c.text)).join(' | ')} |`);
+      const separator = `| ${Array(el.columns).fill('---').join(' | ')} |`;
+      const header = el.headerRow ? rows.shift() ?? '' : `| ${Array(el.columns).fill(' ').join(' | ')} |`;
+      return [header, separator, ...rows].join('\n');
+    }
+    case 'kanban':
+      return [
+        `## ${el.title.trim() || '看板'}`,
+        ...el.columns.flatMap((column) => ['', `### ${column.title.trim() || '未命名'}`, ...column.cards.map((card) => `- ${card.text.trim().replace(/\n/g, ' ')}`)]),
+      ].join('\n');
+    case 'matrix':
+      return [`## ${el.title.trim() || '四象限'}`, '', ...el.quadrants.map((q) => `- ${q}`)].join('\n');
+    case 'code':
+      return `\`\`\`${el.language === 'plaintext' ? '' : el.language}\n${el.code}\n\`\`\``;
     default:
       return null;
   }

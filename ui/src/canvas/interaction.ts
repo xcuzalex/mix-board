@@ -3,6 +3,7 @@ import type {
   TriangleElement, LinearElement, FreedrawElement, HighlighterElement,
   TextElement, StickyNoteElement, SectionElement, FrameElement,
   ImageElement, MindmapElement, ShapeVariant,
+  TableElement, KanbanElement, MatrixElement, CodeElement,
 } from '../types/element';
 import type { ToolType } from '../types/tool';
 import { createBaseProperties } from '../types/element';
@@ -21,6 +22,7 @@ import {
   type SceneIndex,
 } from './linear';
 import { getDefaultShapeVariant, isShapeTool } from './shape-utils';
+import { createCodeFields, createKanbanFields, createMatrixFields, createTableFields } from './structured';
 
 type FreehandElement = FreedrawElement | HighlighterElement;
 
@@ -285,7 +287,8 @@ function getContainedElementIds(
   container: Element,
   elements: Element[],
 ): string[] {
-  if (container.type !== 'section' && container.type !== 'frame') return [];
+  // A 2×2 matrix carries the notes placed on it, like a frame.
+  if (container.type !== 'section' && container.type !== 'frame' && container.type !== 'matrix') return [];
 
   return elements
     .filter((candidate) => candidate.id !== container.id)
@@ -400,7 +403,7 @@ export function handlePointerDown(
         newSelected = selectedIds;
       }
 
-      const dragIds = (hit.type === 'section' || hit.type === 'frame')
+      const dragIds = (hit.type === 'section' || hit.type === 'frame' || hit.type === 'matrix')
         ? [...new Set([...newSelected, ...getContainedElementIds(hit, elements)])]
         : newSelected;
 
@@ -774,6 +777,14 @@ export function createElementForTool(
         strokeColor: '#8B8FA3',
         backgroundColor: 'rgba(0, 0, 0, 0.02)',
       } as SectionElement;
+    case 'table':
+      return { ...base, type: 'table', strokeWidth: 1, backgroundColor: 'transparent', ...createTableFields() } as TableElement;
+    case 'kanban':
+      return { ...base, type: 'kanban', strokeWidth: 0, backgroundColor: 'transparent', ...createKanbanFields() } as KanbanElement;
+    case 'matrix':
+      return { ...base, type: 'matrix', strokeWidth: 0, backgroundColor: 'transparent', ...createMatrixFields() } as MatrixElement;
+    case 'code':
+      return { ...base, type: 'code', strokeWidth: 0, backgroundColor: 'transparent', ...createCodeFields() } as CodeElement;
     case 'frame':
       return {
         ...base, type: 'frame',

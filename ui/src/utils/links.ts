@@ -7,6 +7,8 @@
  */
 import type { Element, MindmapElement } from '../types/element';
 import { visitMindmapNodes } from '../canvas/mindmap-ops';
+import { structuredText } from '../canvas/structured';
+import { isStructuredElement } from '../types/element';
 
 const LINK_RE = /\[\[([^\]]+)\]\]/g;
 
@@ -21,6 +23,7 @@ function collectMindmapText(el: MindmapElement): string {
 /** Display title used to resolve [[links]] against this element. */
 export function getNoteTitle(el: Element): string {
   if (el.type === 'mindmap') return ((el as MindmapElement).rootNode.text ?? '').trim();
+  if (el.type === 'kanban' || el.type === 'matrix') return el.title.trim();
   if (el.type === 'text' || el.type === 'sticky_note') {
     const text: string = (el as any).text ?? '';
     const firstLine = text.split('\n').map((l) => l.trim()).find((l) => l) ?? '';
@@ -33,7 +36,7 @@ export function getNoteTitle(el: Element): string {
 export function extractLinks(el: Element): string[] {
   const text = el.type === 'mindmap'
     ? collectMindmapText(el as MindmapElement)
-    : ((el as any).text ?? '');
+    : isStructuredElement(el) ? structuredText(el) : ((el as any).text ?? '');
   const names: string[] = [];
   LINK_RE.lastIndex = 0;
   let m: RegExpExecArray | null;

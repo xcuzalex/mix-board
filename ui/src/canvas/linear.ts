@@ -11,6 +11,10 @@ const CONNECTABLE_TYPES = new Set([
   'section',
   'frame',
   'mindmap',
+  'table',
+  'kanban',
+  'matrix',
+  'code',
 ]);
 
 const FOCUS_POINTS = 7;

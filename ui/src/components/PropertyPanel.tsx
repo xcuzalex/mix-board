@@ -3,8 +3,20 @@ import { useShallow } from 'zustand/react/shallow';
 import { useDocumentStore } from '../store/document';
 import { useUIStore } from '../store/ui';
 import { PRESET_COLORS, STICKY_NOTE_COLORS } from '../utils/color';
-import { mapMindmapTree, findMindmapNode, getMindmapSiblings } from '../canvas/mindmap-ops';
+import { mapMindmapTree, findMindmapNode, getMindmapSiblings, visitMindmapNodes } from '../canvas/mindmap-ops';
 import { layoutMindmapNodes, measureMindmapNodeWith, getLayoutBounds } from '../canvas/render/mindmap-layout';
+import {
+  CODE,
+  CODE_LANGUAGES,
+  KANBAN_COLORS,
+  MATRIX_PRESETS,
+  addKanbanColumn,
+  deleteTableColumn,
+  deleteTableRow,
+  insertTableColumn,
+  insertTableRow,
+  removeKanbanColumn,
+} from '../canvas/structured';
 import type {
   Element,
   StrokeStyle,
@@ -106,6 +118,7 @@ export function PropertyPanel() {
   const setFreedrawColor = useUIStore((s) => s.setFreedrawColor);
   const setHighlighterColor = useUIStore((s) => s.setHighlighterColor);
   const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
+  const tableCursor = useUIStore((s) => s.tableCursor);
   const setZoom = useUIStore((s) => s.setZoom);
   const setViewport = useUIStore((s) => s.setViewport);
   const historyGestureRef = useRef(false);
@@ -277,6 +290,10 @@ export function PropertyPanel() {
     if (mindmap) {
       result.push(...buildMindmapGroups(mindmap));
     }
+    const structured = first.type === 'table' || first.type === 'kanban' || first.type === 'matrix' || first.type === 'code';
+    if (structured && selectedElements.length === 1) {
+      result.push(...buildStructuredGroups(first));
+    }
 
     if (isHighlighter) {
       const normalize = (color: string | undefined) => (color ?? '').replace(/\s/g, '');
@@ -342,7 +359,7 @@ export function PropertyPanel() {
       });
     }
 
-    if (!isStickyNote && !mindmap && !isHighlighter) {
+    if (!isStickyNote && !mindmap && !isHighlighter && !structured) {
       result.push({
         id: 'stroke',
         label: isText ? '文字颜色' : '描边',
@@ -470,6 +487,146 @@ export function PropertyPanel() {
     return result;
   }
 
+  function buildStructuredGroups(el: Element): Group[] {
+    const only = (patch: Partial<Element> | null) => {
+      if (patch) update(patch, { ids: [el.id] });
+    };
+    if (el.type === 'table') {
+      const cursor = tableCursor?.elementId === el.id ? tableCursor : null;
+      const row = Math.min(cursor?.row ?? el.rows - 1, el.rows - 1);
+      const col = Math.min(cursor?.col ?? el.columns - 1, el.columns - 1);
+      return [{
+        id: 'table',
+        label: '表格',
+        icon: <TableIcon />,
+        content: (
+          <>
+            <Field label={cursor ? `第 ${row + 1} 行 · 第 ${col + 1} 列` : '行与列（双击单元格可编辑）'}>
+              <div className="grid grid-cols-2 gap-1">
+                <TextBtn onClick={() => only(insertTableRow(el, row))}>上方插入行</TextBtn>
+                <TextBtn onClick={() => only(insertTableRow(el, row + 1))}>下方插入行</TextBtn>
+                <TextBtn onClick={() => only(insertTableColumn(el, col))}>左侧插入列</TextBtn>
+                <TextBtn onClick={() => only(insertTableColumn(el, col + 1))}>右侧插入列</TextBtn>
+                <TextBtn disabled={el.rows <= 1} onClick={() => only(deleteTableRow(el, row))}>删除此行</TextBtn>
+                <TextBtn disabled={el.columns <= 1} onClick={() => only(deleteTableColumn(el, col))}>删除此列</TextBtn>
+              </div>
+            </Field>
+            <Field label="样式">
+              <Segmented
+                options={[{ value: 'on', label: '标题行' }, { value: 'off', label: '无标题行' }]}
+                value={el.headerRow ? 'on' : 'off'}
+                onChange={(v) => only({
+                  headerRow: v === 'on',
+                  cells: el.cells.map((r, i) => (i === 0 ? r.map((c) => ({ ...c, fontWeight: v === 'on' ? 'bold' as const : 'normal' as const })) : r)),
+                } as Partial<Element>)}
+              />
+            </Field>
+          </>
+        ),
+      }];
+    }
+    if (el.type === 'kanban') {
+      return [{
+        id: 'kanban',
+        label: '看板',
+        icon: <KanbanIcon />,
+        content: (
+          <>
+            <Field label="列（双击标题或卡片可编辑，拖动卡片可换列）">
+              <div className="grid grid-cols-2 gap-1">
+                <TextBtn onClick={() => only(addKanbanColumn(el) as Partial<Element>)}>添加一列</TextBtn>
+                <TextBtn disabled={el.columns.length <= 1} onClick={() => only(removeKanbanColumn(el) as Partial<Element> | null)}>删除最后一列</TextBtn>
+              </div>
+            </Field>
+            <Field label="列颜色">
+              <div className="flex flex-col gap-1.5">
+                {el.columns.map((column, i) => (
+                  <div key={column.id} className="flex items-center gap-2">
+                    <span className="w-16 truncate text-xs text-slate-500 dark:text-slate-400">{column.title || '未命名'}</span>
+                    <div className="flex gap-1">
+                      {KANBAN_COLORS.map((color) => (
+                        <button
+                          key={color}
+                          type="button"
+                          title={color}
+                          aria-label={`${column.title} ${color}`}
+                          aria-pressed={column.color === color}
+                          onClick={() => only({ columns: el.columns.map((c, j) => (j === i ? { ...c, color } : c)) } as Partial<Element>)}
+                          className={`h-4 w-4 rounded-full ${column.color === color ? 'ring-2 ring-[#007aff] ring-offset-1' : ''}`}
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Field>
+          </>
+        ),
+      }];
+    }
+    if (el.type === 'matrix') {
+      return [{
+        id: 'matrix',
+        label: '四象限',
+        icon: <MatrixIcon />,
+        content: (
+          <Field label="模板（双击标题、象限名或坐标轴可编辑）">
+            <div className="grid grid-cols-1 gap-1">
+              {Object.values(MATRIX_PRESETS).map((preset) => (
+                <TextBtn
+                  key={preset.label}
+                  onClick={() => only({
+                    title: preset.title,
+                    quadrants: [...preset.quadrants],
+                    xAxis: [...preset.xAxis],
+                    yAxis: [...preset.yAxis],
+                  } as Partial<Element>)}
+                >
+                  {preset.label}
+                </TextBtn>
+              ))}
+            </div>
+          </Field>
+        ),
+      }];
+    }
+    if (el.type === 'code') {
+      return [{
+        id: 'code',
+        label: '代码块',
+        icon: <CodeIcon />,
+        content: (
+          <>
+            <Field label="语言">
+              <Select value={el.language} options={CODE_LANGUAGES.map((l) => ({ value: l, label: l }))} onChange={(v) => only({ language: v } as Partial<Element>)} />
+            </Field>
+            <Field label="主题">
+              <Segmented
+                options={[{ value: 'dark', label: '深色' }, { value: 'light', label: '浅色' }]}
+                value={el.codeTheme}
+                onChange={(v) => only({ codeTheme: v } as Partial<Element>)}
+              />
+            </Field>
+            <Field label="字号">
+              {slider({
+                value: el.fontSize,
+                min: 10,
+                max: 24,
+                unit: 'px',
+                onChange: (v) => updateInHistoryGesture({
+                  fontSize: v,
+                  height: Math.ceil(CODE.headerH + CODE.pad * 2 + Math.max(1, el.code.split('\n').length) * v * CODE.lineHeight),
+                } as Partial<Element>, [el.id]),
+              })}
+            </Field>
+          </>
+        ),
+      }];
+    }
+    return [];
+  }
+
   function buildMindmapGroups(mindmap: MindmapElement): Group[] {
     const branchSample = getFirstBranchNode(mindmap.rootNode);
     // Mindmap controls edit only this mindmap, never other selected elements.
@@ -477,6 +634,10 @@ export function PropertyPanel() {
     const selNodeId = selectedMindmapNode?.elementId === mindmap.id ? selectedMindmapNode.nodeId : null;
     const selNode = selNodeId ? findMindmapNode(mindmap.rootNode, selNodeId) : null;
     const canToggle = !!selNode && selNode.id !== mindmap.rootNode.id && getMindmapSiblings(selNode).length > 0;
+    let hasMovedTopics = false;
+    visitMindmapNodes(mindmap.rootNode, (n) => {
+      if (n.offset) hasMovedTopics = true;
+    });
 
     const fitToScreen = () => {
       const ctx = document.createElement('canvas').getContext('2d');
@@ -525,6 +686,24 @@ export function PropertyPanel() {
               {selNode?.collapsed ? '展开所选' : '收起所选'}
             </TextBtn>
             <TextBtn onClick={fitToScreen}>适应屏幕</TextBtn>
+            <TextBtn
+              disabled={!selNode?.offset}
+              title={selNode?.offset ? '把拖动过的所选主题放回自动位置' : '所选主题没有被拖动过'}
+              onClick={() => selNodeId && updateMindmap({
+                rootNode: mapMindmapTree(mindmap.rootNode, (n) => (n.id === selNodeId ? { offset: null } : null)),
+              })}
+            >
+              所选回到原位
+            </TextBtn>
+            <TextBtn
+              disabled={!hasMovedTopics}
+              title={hasMovedTopics ? '所有拖动过的主题回到自动布局' : '没有拖动过的主题'}
+              onClick={() => updateMindmap({
+                rootNode: mapMindmapTree(mindmap.rootNode, (n) => (n.offset ? { offset: null } : null)),
+              })}
+            >
+              恢复自动布局
+            </TextBtn>
           </div>
         ),
       },
@@ -961,4 +1140,20 @@ function AlignIcon() {
 
 function ArrangeIcon() {
   return <Icon><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></Icon>;
+}
+
+function TableIcon() {
+  return <Icon><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14" /></Icon>;
+}
+
+function KanbanIcon() {
+  return <Icon><rect x="3.5" y="4.5" width="5" height="15" rx="1.5" /><rect x="9.5" y="4.5" width="5" height="10" rx="1.5" /><rect x="15.5" y="4.5" width="5" height="12.5" rx="1.5" /></Icon>;
+}
+
+function MatrixIcon() {
+  return <Icon><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M12 4v16M4 12h16" /></Icon>;
+}
+
+function CodeIcon() {
+  return <Icon><path d="M9 8l-4 4 4 4M15 8l4 4-4 4M13 6l-2 12" /></Icon>;
 }

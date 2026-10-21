@@ -14,5 +14,9 @@ export type ToolType =
   | 'image'
   | 'mindmap'
   | 'section'
-  | 'frame';
+  | 'frame'
+  | 'table'
+  | 'kanban'
+  | 'matrix'
+  | 'code';
 

@@ -96,7 +96,8 @@ export interface BaseProperties {
 export type ElementType =
   | 'rectangle' | 'ellipse' | 'diamond' | 'triangle'
   | 'line' | 'arrow' | 'text' | 'freedraw' | 'highlighter'
-  | 'sticky_note' | 'mindmap' | 'image' | 'section' | 'frame' | 'table';
+  | 'sticky_note' | 'mindmap' | 'image' | 'section' | 'frame' | 'table'
+  | 'kanban' | 'matrix' | 'code';
 
 export interface RectangleElement extends BaseProperties {
   type: 'rectangle';
@@ -186,6 +187,11 @@ export interface MindmapNode {
   icon?: string | null;
   imageFileId?: string | null;
   collapsed: boolean;
+  /**
+   * Where the user dragged this topic, relative to its automatic position.
+   * Its whole subtree moves with it; null/absent means automatic layout.
+   */
+  offset?: { x: number; y: number } | null;
   children: MindmapNode[];
   leftChildren: MindmapNode[];
   rightChildren: MindmapNode[];
@@ -219,8 +225,56 @@ export interface TableElement extends BaseProperties {
   rows: number;
   columns: number;
   cells: TableCell[][];
+  /** Relative column widths / row heights; scaled to the element's box. */
   columnWidths: number[];
   rowHeights: number[];
+  /** Style the first row as a header. */
+  headerRow?: boolean;
+}
+
+export interface KanbanCard {
+  id: string;
+  text: string;
+}
+
+export interface KanbanColumn {
+  id: string;
+  title: string;
+  /** Accent colour of the column header and its cards. */
+  color: string;
+  cards: KanbanCard[];
+}
+
+/** A kanban board: titled columns of Markdown cards, laid out automatically. */
+export interface KanbanElement extends BaseProperties {
+  type: 'kanban';
+  title: string;
+  columns: KanbanColumn[];
+}
+
+/**
+ * A 2×2 matrix (priority / SWOT…): a titled container whose quadrants have
+ * labels and tints; notes placed on it move with it, like a frame.
+ */
+export interface MatrixElement extends BaseProperties {
+  type: 'matrix';
+  title: string;
+  /** Quadrant titles: top-left, top-right, bottom-left, bottom-right. */
+  quadrants: [string, string, string, string];
+  quadrantColors: [string, string, string, string];
+  /** Axis labels: x low → high, y low → high. */
+  xAxis: [string, string];
+  yAxis: [string, string];
+  childElementIds: string[];
+}
+
+/** A code snippet card with a language label and syntax highlighting. */
+export interface CodeElement extends BaseProperties {
+  type: 'code';
+  code: string;
+  language: string;
+  fontSize: number;
+  codeTheme: 'dark' | 'light';
 }
 
 export type Element =
@@ -237,7 +291,10 @@ export type Element =
   | MindmapElement
   | SectionElement
   | FrameElement
-  | TableElement;
+  | TableElement
+  | KanbanElement
+  | MatrixElement
+  | CodeElement;
 
 export type DrawableElement =
   | RectangleElement
@@ -308,6 +365,11 @@ export function isShapeElement(
 
 export function isContainerElement(element: Element): element is ContainerElement {
   return element.type === 'section' || element.type === 'frame';
+}
+
+/** Elements whose content is structured text edited slot by slot (cell, card, label…). */
+export function isStructuredElement(element: Element): element is TableElement | KanbanElement | MatrixElement | CodeElement {
+  return element.type === 'table' || element.type === 'kanban' || element.type === 'matrix' || element.type === 'code';
 }
 
 export function createBaseProperties(

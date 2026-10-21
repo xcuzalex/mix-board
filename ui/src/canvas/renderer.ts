@@ -30,6 +30,8 @@ import {
   DEFAULT_NOTE_FONT,
   type LinkHit,
 } from './render/markdown';
+import { drawCode, drawKanban, drawMatrix, drawTable } from './render/structured';
+import { kanbanHeight } from './structured';
 import {
   type Rect,
   getLayoutBounds,
@@ -392,6 +394,9 @@ export class Renderer {
     }
     if (el.type === 'mindmap') {
       return this.getMindmapBounds(el as MindmapElement);
+    }
+    if (el.type === 'kanban') {
+      return { x: el.x, y: el.y, width: el.width, height: kanbanHeight(el) };
     }
     return { x: el.x, y: el.y, width: el.width, height: el.height };
   }
@@ -836,6 +841,21 @@ export class Renderer {
       case 'section':
       case 'frame':
         this.renderFrame(el);
+        break;
+      case 'table':
+      case 'kanban': {
+        // Cells and cards are Markdown: collect their [[link]] regions.
+        const hits: LinkHit[] = [];
+        if (el.type === 'table') drawTable(ctx, el, hits);
+        else drawKanban(ctx, el, hits);
+        for (const hit of hits) this.linkHits.push({ elementId: el.id, ...hit });
+        break;
+      }
+      case 'matrix':
+        drawMatrix(ctx, el);
+        break;
+      case 'code':
+        drawCode(ctx, el);
         break;
       default:
         this.renderRectangle(el as Element);

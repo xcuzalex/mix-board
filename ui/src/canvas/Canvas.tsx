@@ -18,11 +18,24 @@ import { loadImageToCache, subscribeRendererAssets } from './renderer';
 import { generateId } from '../utils/id';
 import { cloneElementsWithNewIds } from '../utils/clone-elements';
 import {
+  addKanbanCard,
+  applySlotText,
+  fitKanban,
+  getSlotText,
+  kanbanDropAt,
+  kanbanHitAt,
+  moveKanbanCard,
+  nextTableCell,
+  slotAt,
+  type EditSlot,
+} from './structured';
+import {
   findMindmapNode,
   visitMindmapNodes,
   updateMindmapNodeText,
   moveMindmapNode,
   extractMindmapNode,
+  mapMindmapTree,
 } from './mindmap-ops';
 import { useCanvasShortcuts } from './useCanvasShortcuts';
 import { buildLinkIndex, getNoteTitle } from '../utils/links';
@@ -195,6 +208,10 @@ export function Canvas() {
   // Text editing state
   const [editingElement, setEditingElement] = useState<Element | null>(null);
   const [editingMindmapNode, setEditingMindmapNode] = useState<{ elementId: string; nodeId: string } | null>(null);
+  /** The slot (table cell, kanban card, matrix label, code) of a structured element being edited. */
+  const [editingSlot, setEditingSlot] = useState<EditSlot | null>(null);
+  /** Kanban card being dragged between columns. */
+  const kanbanCardDragRef = useRef<{ elementId: string; col: number; card: number } | null>(null);
   const selectedMindmapNode = useUIStore((s) => s.selectedMindmapNode);
   const setSelectedMindmapNode = useUIStore((s) => s.setSelectedMindmapNode);
   const [hoveredConnectableId, setHoveredConnectableId] = useState<string | null>(null);
@@ -378,16 +395,8 @@ export function Canvas() {
       editingElementId: editingElement?.id ?? editingMindmapNode?.elementId ?? null,
       editingMindmapNodeId: editingMindmapNode?.nodeId ?? null,
       mindmapDropTarget: mindmapDropTargetRef.current,
-      mindmapDragPreview: actionRef.current === 'mindmap-node-drag' && mindmapNodeDragRef.current
-        ? {
-            elementId: mindmapNodeDragRef.current.elementId,
-            sourceNodeId: mindmapNodeDragRef.current.nodeId,
-            pointerX: interactionState.currentX,
-            pointerY: interactionState.currentY,
-            offsetX: interactionState.currentX - interactionState.startX,
-            offsetY: interactionState.currentY - interactionState.startY,
-          }
-        : null,
+      // Dragged topics move live (via pending updates), so no ghost copy.
+      mindmapDragPreview: null,
       lassoSelectedIds: lassoSelectedIdsRef.current,
     }) ?? false;
   }, [
@@ -626,7 +635,40 @@ export function Canvas() {
     setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
 
+  const startSlotEditing = useCallback((el: Element, slot: EditSlot) => {
+    setEditingMindmapNode(null);
+    setEditingElement(el);
+    setEditingSlot(slot);
+    if (el.type === 'table' && slot.kind === 'cell') {
+      useUIStore.getState().setTableCursor({ elementId: el.id, row: slot.row, col: slot.col });
+    }
+    const initial = getSlotText(el, slot);
+    editSessionRef.current = { initial, isNew: false };
+    setEditText(initial);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, []);
+
   const finishEditing = useCallback(() => {
+    if (editingElement && editingSlot) {
+      // Structured element: write the edited slot back (re-fitting its size).
+      const session = editSessionRef.current;
+      editSessionRef.current = null;
+      const live = sceneIndexRef.current.byId.get(editingElement.id) ?? editingElement;
+      const emptiedCard = editingSlot.kind === 'card' && editText.trim() === '';
+      // No session means this edit was already committed (e.g. a blur fired as
+      // the editor unmounted after Enter): never apply it a second time.
+      if (session && (emptiedCard || editText !== session.initial)) {
+        const patch = applySlotText(live, editingSlot, editText);
+        if (patch) {
+          pushHistory();
+          updateElement(live.id, patch);
+        }
+      }
+      setEditingElement(null);
+      setEditingSlot(null);
+      setEditText('');
+      return;
+    }
     const session = editSessionRef.current;
     editSessionRef.current = null;
     const unchanged = session !== null && editText === session.initial;
@@ -685,7 +727,7 @@ export function Canvas() {
     setEditingElement(null);
     setEditingMindmapNode(null);
     setEditText('');
-  }, [editingElement, editingMindmapNode, editText, pushHistory, updateElement, removeElements, setSelectedIds]);
+  }, [editingElement, editingSlot, editingMindmapNode, editText, pushHistory, updateElement, removeElements, setSelectedIds]);
 
   // Quit, window close, opening another board etc. commit whatever is in
   // flight on the canvas first: drag/resize previews and an open text edit.
@@ -715,56 +757,30 @@ export function Canvas() {
     return null;
   }, [elements]);
 
+  /** The topic under (x, y) a dragged topic would be dropped onto (re-parented to). */
   const findMindmapDropTargetAtPoint = useCallback((x: number, y: number, source?: { elementId: string; nodeId: string } | null) => {
     const renderer = sceneRendererRef.current;
     if (!renderer) return null;
-
-    const candidates: Array<{ element: MindmapElement; node: MindmapNode; distance: number }> = [];
-    const snapThreshold = 56 / zoom;
+    const tolerance = 8 / viewport.zoom;
+    const hits: Array<{ element: MindmapElement; node: MindmapNode; distance: number }> = [];
 
     for (let index = elements.length - 1; index >= 0; index -= 1) {
       const element = elements[index];
       if (element.type !== 'mindmap') continue;
       if (source && element.id !== source.elementId) continue;
-      const rootRect = renderer.getMindmapNodeRect(element as MindmapElement, element.rootNode.id);
-
       visitMindmapNodes(element.rootNode, (node) => {
         if (source?.nodeId === node.id) return;
         const rect = renderer.getMindmapNodeRect(element as MindmapElement, node.id);
         if (!rect) return;
-
         const nearestX = Math.max(rect.x, Math.min(x, rect.x + rect.w));
         const nearestY = Math.max(rect.y, Math.min(y, rect.y + rect.h));
-        const bodyDistance = Math.hypot(x - nearestX, y - nearestY);
-        const direction = (() => {
-          if (element.layout === 'mindmap_left') return 'left';
-          if (element.layout === 'tree_down') return 'down';
-          if (element.layout === 'mindmap_lr' && rootRect) {
-            const nodeCenter = rect.x + rect.w / 2;
-            const rootCenter = rootRect.x + rootRect.w / 2;
-            return nodeCenter < rootCenter ? 'left' : 'right';
-          }
-          return 'right';
-        })();
-
-        const anchorX = direction === 'left'
-          ? rect.x
-          : direction === 'down'
-            ? rect.x + rect.w / 2
-            : rect.x + rect.w;
-        const anchorY = direction === 'down' ? rect.y + rect.h : rect.y + rect.h / 2;
-        const anchorDistance = Math.hypot(x - anchorX, y - anchorY);
-        const distance = Math.min(bodyDistance, anchorDistance * 0.72);
-        if (distance > snapThreshold) return;
-
-        candidates.push({ element: element as MindmapElement, node, distance });
+        const distance = Math.hypot(x - nearestX, y - nearestY);
+        if (distance <= tolerance) hits.push({ element: element as MindmapElement, node, distance });
       });
     }
-
-    if (candidates.length === 0) return null;
-    candidates.sort((a, b) => a.distance - b.distance);
-    return { element: candidates[0].element, node: candidates[0].node };
-  }, [elements, zoom]);
+    hits.sort((a, b) => a.distance - b.distance);
+    return hits[0] ? { element: hits[0].element, node: hits[0].node } : null;
+  }, [elements]);
 
   // --- Save handler (for Ctrl+S and top bar) ---
   const handleSave = useCallback(() => {
@@ -1036,6 +1052,40 @@ export function Canvas() {
       }
     }
 
+    if (activeTool === 'select' && !e.shiftKey) {
+      const top = hitTest(sceneIndexRef.current, canvasPos.x, canvasPos.y, spatialIndexRef.current ?? undefined);
+      if (top?.type === 'kanban') {
+        const kanbanHit = kanbanHitAt(top, canvasPos.x, canvasPos.y);
+        if (kanbanHit?.kind === 'add') {
+          // "+ 添加卡片": add a card to that column and start typing in it.
+          const { patch, card } = addKanbanCard(top, kanbanHit.col);
+          pushHistory();
+          updateElement(top.id, patch as Partial<Element>);
+          setSelectedIds([top.id]);
+          setSelectedMindmapNode(null);
+          const fresh = useDocumentStore.getState().elements.find((el) => el.id === top.id);
+          if (fresh) startSlotEditing(fresh, { kind: 'card', col: kanbanHit.col, card });
+          return;
+        }
+        if (kanbanHit?.kind === 'card') {
+          // Cards drag between columns; the board itself drags by its header / background.
+          kanbanCardDragRef.current = { elementId: top.id, col: kanbanHit.col, card: kanbanHit.card };
+          interactionState.startX = canvasPos.x;
+          interactionState.startY = canvasPos.y;
+          actionRef.current = 'kanban-card-drag';
+          setSelectedIds([top.id]);
+          setSelectedMindmapNode(null);
+          pushHistory();
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+      if (top?.type === 'table') {
+        const cell = slotAt(top, canvasPos.x, canvasPos.y);
+        if (cell?.kind === 'cell') useUIStore.getState().setTableCursor({ elementId: top.id, row: cell.row, col: cell.col });
+      }
+    }
+
     if (activeTool === 'select') {
       let mindmapHit = findMindmapHitAtPoint(canvasPos.x, canvasPos.y);
       if (mindmapHit) {
@@ -1078,6 +1128,8 @@ export function Canvas() {
           mindmapNodeDragRef.current = { elementId: mindmapHit.element.id, nodeId: mindmapHit.node.id };
           mindmapDropTargetRef.current = null;
           actionRef.current = 'mindmap-node-drag';
+          // Recorded only if the topic actually moves or is re-parented.
+          pushHistory();
           setCursorStyle('grabbing');
         }
         canvas.setPointerCapture(e.pointerId);
@@ -1243,6 +1295,19 @@ export function Canvas() {
       autoPanRef.current.active = false;
     }
 
+    if (actionRef.current === 'kanban-card-drag') {
+      const drag = kanbanCardDragRef.current;
+      const board = drag ? sceneIndexRef.current.byId.get(drag.elementId) : null;
+      const moved = Math.hypot(canvasPos.x - interactionState.startX, canvasPos.y - interactionState.startY) > 4 / viewport.zoom;
+      if (drag && board?.type === 'kanban' && moved) {
+        // Live preview: the card already sits where it would drop.
+        const columns = moveKanbanCard(board, drag, kanbanDropAt(board, canvasPos.x, canvasPos.y));
+        setPendingElementUpdates(new Map([[board.id, fitKanban(board, columns) as Partial<Element>]]));
+        setCursorStyle('grabbing');
+      }
+      return;
+    }
+
     if (actionRef.current === 'mindmap-node-drag') {
       interactionState.currentX = canvasPos.x;
       interactionState.currentY = canvasPos.y;
@@ -1267,6 +1332,19 @@ export function Canvas() {
       }
 
       mindmapDropTargetRef.current = dropTarget;
+
+      // The topic (and its subtree) follows the pointer as a layout offset.
+      const sourceElement = dragState ? sceneIndexRef.current.byId.get(dragState.elementId) : null;
+      const dx = canvasPos.x - interactionState.startX;
+      const dy = canvasPos.y - interactionState.startY;
+      if (dragState && sourceElement?.type === 'mindmap' && Math.hypot(dx, dy) > 4 / viewport.zoom) {
+        const rootNode = mapMindmapTree(sourceElement.rootNode, (node) => (node.id === dragState.nodeId
+          ? { offset: { x: (node.offset?.x ?? 0) + dx, y: (node.offset?.y ?? 0) + dy } }
+          : null));
+        setPendingElementUpdates(new Map([[sourceElement.id, { rootNode } as Partial<Element>]]));
+      } else {
+        setPendingElementUpdates(null);
+      }
       invalidateOverlay();
       return;
     }
@@ -1620,8 +1698,16 @@ export function Canvas() {
         ? viewport.screenToCanvas(clientX - rect.left, clientY - rect.top)
         : { x: interactionState.currentX, y: interactionState.currentY };
 
+      // Dropped onto another topic: re-parent it (below) instead of keeping the free move.
+      if (actionRef.current === 'mindmap-node-drag' && mindmapDropTargetRef.current) {
+        setPendingElementUpdates(null);
+      }
       commitPendingElementUpdates();
       dragUnbindRef.current = null;
+      if (actionRef.current === 'kanban-card-drag') {
+        kanbanCardDragRef.current = null;
+        setCursorStyle('default');
+      }
 
       // Drag threshold: if never crossed, treat as a pure click
       if (actionRef.current === 'drag' && !interactionState.hasDragged) {
@@ -1674,8 +1760,10 @@ export function Canvas() {
             && dropTarget.elementId === dragState.elementId
             && dropTarget.nodeId !== dragState.nodeId
           ) {
-            const nextRootNode = moveMindmapNode(sourceElement.rootNode, dragState.nodeId, dropTarget.nodeId);
-            if (nextRootNode !== sourceElement.rootNode) {
+            const moved = moveMindmapNode(sourceElement.rootNode, dragState.nodeId, dropTarget.nodeId);
+            if (moved !== sourceElement.rootNode) {
+              // Under its new parent the topic starts from the automatic spot.
+              const nextRootNode = mapMindmapTree(moved, (node) => (node.id === dragState.nodeId && node.offset ? { offset: null } : null));
               pushHistory();
               updateElement(sourceElement.id, { rootNode: nextRootNode } as any);
               setSelectedMindmapNode({ elementId: sourceElement.id, nodeId: dragState.nodeId });
@@ -1777,6 +1865,25 @@ export function Canvas() {
     const canvasPos = viewport.screenToCanvas(screenX, screenY);
 
     const hit = hitTest(sceneIndexRef.current, canvasPos.x, canvasPos.y, spatialIndexRef.current ?? undefined);
+    if (hit && (hit.type === 'table' || hit.type === 'kanban' || hit.type === 'matrix' || hit.type === 'code')) {
+      setSelectedIds([hit.id]);
+      setSelectedMindmapNode(null);
+      const slot = slotAt(hit, canvasPos.x, canvasPos.y);
+      if (slot) {
+        startSlotEditing(hit, slot);
+      } else if (hit.type === 'matrix') {
+        // Double-click an empty spot in a quadrant: drop a note there.
+        const note = createElementForTool('sticky_note', canvasPos.x - 80, canvasPos.y - 50);
+        if (note) {
+          Object.assign(note, { width: 160, height: 100 });
+          pushHistory();
+          addElement(note);
+          setSelectedIds([note.id]);
+          startTextEditing(note, { isNew: true });
+        }
+      }
+      return;
+    }
     const editableOnDoubleClick = ['text', 'sticky_note', 'section', 'frame', 'rectangle', 'ellipse', 'diamond', 'triangle'];
     if (hit && editableOnDoubleClick.includes(hit.type)) {
       setSelectedIds([hit.id]);
@@ -1791,7 +1898,7 @@ export function Canvas() {
       setSelectedMindmapNode({ elementId: mindmapHit.element.id, nodeId: mindmapHit.node.id });
       startMindmapNodeEditing(mindmapHit.element.id, mindmapHit.node.id, mindmapHit.node.text);
     }
-  }, [elements, setSelectedIds, startTextEditing, findMindmapHitAtPoint, startMindmapNodeEditing]);
+  }, [elements, setSelectedIds, startTextEditing, findMindmapHitAtPoint, startMindmapNodeEditing, startSlotEditing, pushHistory, addElement]);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -1866,6 +1973,7 @@ export function Canvas() {
   // Text editor overlay position/style — computed by ./text-editing (P0.C).
   const editPos = computeEditingPosition({
     editingElement,
+    editingSlot,
     editingMindmapNode,
     zoom,
     viewport,
@@ -1978,7 +2086,7 @@ export function Canvas() {
               color: editPos.color,
               padding: editPos.padding,
               textAlign: (editPos as any).textAlign ?? 'left',
-              lineHeight: 1.3,
+              lineHeight: editPos.lineHeight ?? 1.3,
               backgroundColor: (editPos as any).backgroundColor,
               borderRadius: `${(editPos as any).borderRadius ?? 0}px`,
             }}
@@ -2010,6 +2118,41 @@ export function Canvas() {
                   e.stopPropagation();
                   setLinkSuggest(null);
                   return;
+                }
+              }
+              if (editingSlot && editingElement && !e.nativeEvent.isComposing) {
+                if (editingSlot.kind === 'code') {
+                  if (e.key === 'Tab') {
+                    // Indent inside the code card instead of leaving the editor.
+                    e.preventDefault();
+                    const ta = e.currentTarget;
+                    const { selectionStart, selectionEnd, value } = ta;
+                    const next = `${value.slice(0, selectionStart)}  ${value.slice(selectionEnd)}`;
+                    setEditText(next);
+                    requestAnimationFrame(() => ta.setSelectionRange(selectionStart + 2, selectionStart + 2));
+                  } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    finishEditing();
+                  }
+                } else if (e.key === 'Tab' && editingSlot.kind === 'cell') {
+                  // Tab / Shift+Tab walk through table cells.
+                  e.preventDefault();
+                  const tableId = editingElement.id;
+                  const next = (() => {
+                    const live = sceneIndexRef.current.byId.get(tableId);
+                    return live?.type === 'table' ? nextTableCell(live, editingSlot, e.shiftKey) : null;
+                  })();
+                  finishEditing();
+                  if (next) {
+                    setTimeout(() => {
+                      const fresh = useDocumentStore.getState().elements.find((el) => el.id === tableId);
+                      if (fresh) startSlotEditing(fresh, next);
+                    }, 0);
+                  }
+                } else if (e.key === 'Enter' && !e.shiftKey) {
+                  // Enter commits a cell / card / label; Shift+Enter adds a line.
+                  e.preventDefault();
+                  finishEditing();
                 }
               }
               if (e.key === 'Escape') {

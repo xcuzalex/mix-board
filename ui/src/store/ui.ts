@@ -26,6 +26,9 @@ interface UIStore {
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
   selectedMindmapNode: { elementId: string; nodeId: string } | null;
+  /** Last table cell the user edited or clicked (target of row/column actions). */
+  tableCursor: { elementId: string; row: number; col: number } | null;
+  setTableCursor: (cursor: { elementId: string; row: number; col: number } | null) => void;
   setSelectedMindmapNode: (node: { elementId: string; nodeId: string } | null) => void;
 
   // Viewport
@@ -95,6 +98,8 @@ export const useUIStore = create<UIStore>()((set, get) => ({
   setSelectedIds: (ids) => set({ selectedIds: ids }),
   selectedMindmapNode: null,
   setSelectedMindmapNode: (node) => set({ selectedMindmapNode: node }),
+  tableCursor: null,
+  setTableCursor: (cursor) => set({ tableCursor: cursor }),
 
   viewportX: 0,
   viewportY: 0,

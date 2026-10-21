@@ -31,6 +31,10 @@ const DRAW_TOOLS: Array<{ tool: ToolType; label: string }> = [
 
 const DRAW_TOOL_SET = new Set<ToolType>(['arrow', 'line', 'freedraw', 'section', 'image']);
 
+/** Structured note blocks (the library's 结构 section); they keep their own default size when inserted. */
+const STRUCTURE_ITEMS: LibraryItem[] = SHAPE_LIBRARY_SECTIONS.find((section) => section.title === '结构')?.items ?? [];
+const STRUCTURE_TOOLS = new Set<ToolType>(STRUCTURE_ITEMS.map((item) => item.tool));
+
 // Pre-rename key, kept so the saved preference survives.
 const PIN_STORAGE_KEY = 'mixboard.toolbar.pinned';
 const REVEAL_ZONE_PX = 60;
@@ -49,6 +53,8 @@ export function Toolbar() {
   const pushHistory = useDocumentStore((s) => s.pushHistory);
 
   const [showDrawPanel, setShowDrawPanel] = useState(false);
+  const [showStructure, setShowStructure] = useState(false);
+  const structureRef = useRef<HTMLDivElement | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
   const [query, setQuery] = useState('');
   const closeTimerRef = useRef<number | null>(null);
@@ -87,7 +93,24 @@ export function Toolbar() {
 
   useEffect(() => () => clearCloseTimer(), []);
 
-  const keepOpen = pinned || showDrawPanel || showLibrary;
+  const keepOpen = pinned || showDrawPanel || showLibrary || showStructure;
+
+  // The structure menu closes on any click outside it, or Escape.
+  useEffect(() => {
+    if (!showStructure) return undefined;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!structureRef.current?.contains(e.target as Node)) setShowStructure(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowStructure(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showStructure]);
 
   const clearHideTimer = () => {
     if (hideTimerRef.current !== null) {
@@ -204,14 +227,19 @@ export function Toolbar() {
     const element = createElementForTool(item.tool, center.x, center.y, { shapeVariant: item.shapeVariant });
     if (!element) return false;
 
-    const { width, height } = getInsertSize(item.tool, item.shapeVariant);
-    element.width = width;
-    element.height = height;
-    element.x = center.x - width / 2;
-    element.y = center.y - height / 2;
+    if (!STRUCTURE_TOOLS.has(item.tool)) {
+      const { width, height } = getInsertSize(item.tool, item.shapeVariant);
+      element.width = width;
+      element.height = height;
+    }
+    element.x = center.x - element.width / 2;
+    element.y = center.y - element.height / 2;
 
     pushHistory();
     addElement(element);
+    // A matrix is a backdrop for notes: put it behind existing content so it
+    // never hides (or steals clicks from) notes it is dropped onto.
+    if (element.type === 'matrix') useDocumentStore.getState().sendToBack([element.id]);
     setSelectedIds([element.id]);
     setActiveTool('select');
     if (item.shapeVariant) {
@@ -378,6 +406,35 @@ export function Toolbar() {
               <ToolGlyph tool={item.tool} className="h-5 w-5" />
             </ToolbarButton>
           ))}
+
+          {/* Structured blocks: table, kanban, 2×2 matrix, code */}
+          <div ref={structureRef} className="relative">
+            <ToolbarButton active={showStructure} label="表格与结构" onClick={() => setShowStructure((v) => !v)}>
+              <ToolGlyph tool="table" className="h-5 w-5" />
+            </ToolbarButton>
+            {showStructure && (
+              <div
+                role="menu"
+                className="absolute left-1/2 top-full mt-3 w-44 -translate-x-1/2 rounded-[16px] border border-black/[0.06] bg-white/85 p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_12px_36px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#1c1c1e]/90"
+              >
+                {STRUCTURE_ITEMS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      insertItem(item);
+                      setShowStructure(false);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-slate-700 transition hover:bg-black/[0.05] dark:text-slate-200 dark:hover:bg-white/10"
+                  >
+                    <ToolGlyph tool={item.tool} className="h-[18px] w-[18px] text-slate-500 dark:text-slate-400" />
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           <Divider />
 

@@ -149,6 +149,12 @@ export function layoutMindmapNodes(el: MindmapElement, measure: MeasureNode): Ma
     y: number,
     direction: 'right' | 'left' | 'down',
   ) => {
+    // A topic the user dragged sits at its automatic spot plus its offset,
+    // and its subtree is laid out from there, so the branch moves as one.
+    if (node.offset && node.id !== root.id) {
+      x += node.offset.x;
+      y += node.offset.y;
+    }
     const size = sizeOf(node);
     layout.set(node.id, { x, y, w: size.w, h: size.h });
 
