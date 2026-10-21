@@ -31,7 +31,9 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let hide = PredefinedMenuItem::hide(app, Some("隐藏 MixBoard"))?;
     let hide_others = PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?;
     let show_all = PredefinedMenuItem::show_all(app, Some("显示全部"))?;
-    let quit = PredefinedMenuItem::quit(app, Some("退出 MixBoard"))?;
+    // Not PredefinedMenuItem::quit: that calls -[NSApp terminate:], which exits
+    // without an ExitRequested event, so autosave never gets to flush.
+    let quit = item(app, "app.quit", "退出 MixBoard", Some("CmdOrCtrl+Q"))?;
     let app_menu = SubmenuBuilder::new(app, "MixBoard")
         .item(&about)
         .item(&services)
@@ -150,6 +152,12 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    if id == "app.quit" {
+        // Raises ExitRequested, where quit::on_exit_requested flushes first.
+        app.exit(0);
+        return;
+    }
+
     let should_emit = matches!(
         id,
         "file.new"
